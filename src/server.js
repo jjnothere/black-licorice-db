@@ -15,48 +15,149 @@ app.get('/hello', async (req, res) => {
   res.send(items);
 });
 
+app.get('/get-current-campaigns', async (req, res) => {
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const currentCampaigns = await db.collection('campaigns').findOne({});
+    res.json(currentCampaigns || { elements: [] });
+  } catch (error) {
+    console.error('Error fetching current campaigns from database:', error);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+app.post('/save-campaigns', async (req, res) => {
+  const { campaigns } = req.body;
+
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const collection = db.collection('campaigns');
+
+    const existingDoc = await collection.findOne({});
+
+    if (existingDoc) {
+      await collection.updateOne(
+        { _id: existingDoc._id },
+        { $set: { elements: campaigns.elements } }
+      );
+      res.send('Campaigns updated successfully');
+    } else {
+      await collection.insertOne({ elements: campaigns.elements });
+      res.send('Campaigns saved successfully');
+    }
+  } catch (error) {
+    console.error('Error saving campaigns to MongoDB:', error);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+app.post('/save-changes', async (req, res) => {
+  const { changes } = req.body;
+
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const changesCollection = db.collection('changes');
+
+    for (const change of changes) {
+      await changesCollection.insertOne({
+        campaign: change.campaign,
+        date: change.date,
+        changes: change.changes,
+        notes: change.notes || [],
+      });
+    }
+
+    res.send('Changes saved successfully');
+  } catch (error) {
+    console.error('Error saving changes to MongoDB:', error);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+app.get('/get-all-changes', async (req, res) => {
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const allChanges = await db.collection('changes').find({}).toArray();
+    res.json(allChanges);
+  } catch (error) {
+    console.error('Error fetching all changes from database:', error);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
 app.post('/update-notes', async (req, res) => {
   const { id, newNote } = req.body;
   const note = { note: newNote, timestamp: new Date().toISOString() };
 
-  await client.connect();
-  const db = client.db('black-licorice');
-  await db.collection('items').updateOne(
-    { _id: new ObjectId(id) },
-    { $push: { historyNotes: note } }
-  );
-  res.send('Note added successfully');
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const result = await db.collection('changes').updateOne(
+      { _id: new ObjectId(id) },
+      { $push: { notes: note } }
+    );
+    if (result.matchedCount === 0) {
+      res.status(404).send('Document not found');
+    } else {
+      res.send('Note added successfully');
+    }
+  } catch (error) {
+    console.error('Error adding note to MongoDB:', error);
+    res.status(500).send('Internal Server Error');
+  }
 });
 
 app.post('/edit-note', async (req, res) => {
   const { id, noteIndex, updatedNote } = req.body;
 
-  await client.connect();
-  const db = client.db('black-licorice');
-  const item = await db.collection('items').findOne({ _id: new ObjectId(id) });
-  item.historyNotes[noteIndex].note = updatedNote;
-  item.historyNotes[noteIndex].timestamp = new Date().toISOString();
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const change = await db.collection('changes').findOne({ _id: new ObjectId(id) });
+    if (!change) {
+      res.status(404).send('Document not found');
+      return;
+    }
+    change.notes[noteIndex].note = updatedNote;
+    change.notes[noteIndex].timestamp = new Date().toISOString();
 
-  await db.collection('items').updateOne(
-    { _id: new ObjectId(id) },
-    { $set: { historyNotes: item.historyNotes } }
-  );
-  res.send('Note updated successfully');
+    await db.collection('changes').updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { notes: change.notes } }
+    );
+    res.send('Note updated successfully');
+  } catch (error) {
+    console.error('Error updating note in MongoDB:', error);
+    res.status(500).send('Internal Server Error');
+  }
 });
 
 app.post('/delete-note', async (req, res) => {
   const { id, noteIndex } = req.body;
 
-  await client.connect();
-  const db = client.db('black-licorice');
-  const item = await db.collection('items').findOne({ _id: new ObjectId(id) });
-  item.historyNotes.splice(noteIndex, 1);
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const change = await db.collection('changes').findOne({ _id: new ObjectId(id) });
+    if (!change) {
+      res.status(404).send('Document not found');
+      return;
+    }
+    change.notes.splice(noteIndex, 1);
 
-  await db.collection('items').updateOne(
-    { _id: new ObjectId(id) },
-    { $set: { historyNotes: item.historyNotes } }
-  );
-  res.send('Note deleted successfully');
+    await db.collection('changes').updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { notes: change.notes } }
+    );
+    res.send('Note deleted successfully');
+  } catch (error) {
+    console.error('Error deleting note from MongoDB:', error);
+    res.status(500).send('Internal Server Error');
+  }
 });
 
 app.get('/linkedin', async (req, res) => {
