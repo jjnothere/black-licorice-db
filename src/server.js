@@ -35,16 +35,19 @@ app.post('/save-campaigns', async (req, res) => {
     const db = client.db('black-licorice');
     const collection = db.collection('campaigns');
 
+    // Check if a document with the same data already exists
     const existingDoc = await collection.findOne({});
 
     if (existingDoc) {
+      // Update the existing document
       await collection.updateOne(
         { _id: existingDoc._id },
-        { $set: { elements: campaigns.elements } }
+        { $set: { elements: campaigns } }
       );
       res.send('Campaigns updated successfully');
     } else {
-      await collection.insertOne({ elements: campaigns.elements });
+      // Insert a new document
+      await collection.insertOne({ elements: campaigns });
       res.send('Campaigns saved successfully');
     }
   } catch (error) {
@@ -62,29 +65,11 @@ app.post('/save-changes', async (req, res) => {
     const changesCollection = db.collection('changes');
 
     for (const change of changes) {
-      await changesCollection.insertOne({
-        campaign: change.campaign,
-        date: change.date,
-        changes: change.changes,
-        notes: change.notes || [],
-      });
+      await changesCollection.insertOne(change);
     }
-
     res.send('Changes saved successfully');
   } catch (error) {
     console.error('Error saving changes to MongoDB:', error);
-    res.status(500).send('Internal Server Error');
-  }
-});
-
-app.get('/get-all-changes', async (req, res) => {
-  try {
-    await client.connect();
-    const db = client.db('black-licorice');
-    const allChanges = await db.collection('changes').find({}).toArray();
-    res.json(allChanges);
-  } catch (error) {
-    console.error('Error fetching all changes from database:', error);
     res.status(500).send('Internal Server Error');
   }
 });
@@ -160,6 +145,19 @@ app.post('/delete-note', async (req, res) => {
   }
 });
 
+
+app.get('/get-all-changes', async (req, res) => {
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const changes = await db.collection('changes').find({}).toArray();
+    res.json(changes);
+  } catch (error) {
+    console.error('Error fetching changes from MongoDB:', error);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
 app.get('/linkedin', async (req, res) => {
   const { start, end, campaigns } = req.query;
   
@@ -225,6 +223,19 @@ app.get('/linkedin/ad-campaigns', async (req, res) => {
   } catch (error) {
     console.error('Error fetching data from LinkedIn API:', error);
     res.status(error.response ? error.response.status : 500).send(error.message);
+  }
+});
+
+
+app.get('/get-all-changes', async (req, res) => {
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const allChanges = await db.collection('changes').find({}).toArray();
+    res.json(allChanges);
+  } catch (error) {
+    console.error('Error fetching all changes from database:', error);
+    res.status(500).send('Internal Server Error');
   }
 });
 
