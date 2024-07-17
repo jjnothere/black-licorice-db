@@ -1,10 +1,13 @@
 import express from 'express';
 const axios = require('axios');
 import { MongoClient, ObjectId } from 'mongodb';
+import bcrypt from 'bcrypt';
+import { v4 as uuidv4 } from 'uuid';
+import jwt from 'jsonwebtoken';
 
 const url = 'mongodb+srv://jjnothere:GREATpoop^6^@black-licorice-cluster.5hb9ank.mongodb.net/?retryWrites=true&w=majority&appName=black-licorice-cluster';
 const client = new MongoClient(url);
-
+const SECRET_KEY = '10e9b23966ddb67730a76de7cbaa4f58b06f18a8d11d181888d4ee5b3412d06b';
 const app = express();
 app.use(express.json());
 
@@ -14,6 +17,83 @@ app.get('/hello', async (req, res) => {
   const items = await db.collection('items').find({}).toArray();
   res.send(items);
 });
+
+// User registration route
+app.post('/signup', async (req, res) => {
+  console.log('Signup request received:', req.body); // Log the request
+  const { email, password, rePassword } = req.body;
+  
+  if (password !== rePassword) {
+    return res.status(400).json({ message: 'Passwords do not match' });
+  }
+
+  try {
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+    const user = await usersCollection.findOne({ email });
+
+    if (user) {
+      return res.status(400).json({ message: 'User already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10); // bcrypt usage
+    const newUser = {
+      email,
+      password: hashedPassword,
+      userId: uuidv4(),
+    };
+
+    await usersCollection.insertOne(newUser);
+    res.status(201).json({ message: 'User registered successfully' });
+  } catch (error) {
+    console.error('Error registering user:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+// User login route
+app.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+
+    const user = await usersCollection.findOne({ email });
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid email or password' });
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(400).json({ message: 'Invalid email or password' });
+    }
+
+    const token = jwt.sign({ userId: user.userId }, SECRET_KEY, { expiresIn: '1h' });
+
+    res.json({ token });
+  } catch (error) {
+    console.error('Error logging in:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+
+// Middleware to authenticate token
+function authenticateToken(req, res, next) {
+  const token = req.headers['authorization'];
+
+  if (!token) return res.status(401).json({ message: 'Access Denied' });
+
+  try {
+    const verified = jwt.verify(token, SECRET_KEY);
+    req.user = verified;
+    next();
+  } catch (error) {
+    res.status(400).json({ message: 'Invalid Token' });
+  }
+}
 
 app.get('/get-current-campaigns', async (req, res) => {
   try {
