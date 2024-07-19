@@ -8,7 +8,15 @@ import jwt from 'jsonwebtoken';
 const url = 'mongodb+srv://jjnothere:GREATpoop^6^@black-licorice-cluster.5hb9ank.mongodb.net/?retryWrites=true&w=majority&appName=black-licorice-cluster';
 const client = new MongoClient(url);
 const SECRET_KEY = '10e9b23966ddb67730a76de7cbaa4f58b06f18a8d11d181888d4ee5b3412d06b';
-const app = express();
+
+
+const token = 'AQV_sv7464y5sYabV-HsMa9Pn3LPLlP9FwU7Ipu4uQH4Mvc6CgTfcLh2PC26WbI_nscTNnOmSiokgemWAlXG5i-ryx3OLkDMt3IkPG0mlXI6MJDHDlac8bvVjez8iaE3e2VA6xF3eg3aND4b9XrzlPwMU9xXOXHrgxY78dztAUS51ty1LDDc8_zbbmYWtTodY1FruLbvWJrzX2O5cOspK28pMpNAVj348MIitHCNy3bfS4XhjumFcpY8apapvTSyFF__5GVJswxdLzLxcT-CE2cRlenSPKjw4HcMvYgcvO4Glx0Dt_RtPfUmdTEty7vq2KbnQNCiNIQ2ZSbLAdcP8xo0u_lCAg';
+
+
+const userAdAccountID = '512388408'
+
+
+const app = express(); 
 app.use(express.json());
 
 app.get('/hello', async (req, res) => {
@@ -18,9 +26,71 @@ app.get('/hello', async (req, res) => {
   res.send(items);
 });
 
+// Middleware to authenticate token
+function authenticateToken(req, res, next) {
+  const token = req.headers['authorization'] && req.headers['authorization'].split(' ')[1];
+  console.log("🐒 ~ token:", token)
+
+  if (!token) return res.status(401).json({ message: 'Access Denied' });
+
+  try {
+    const verified = jwt.verify(token, SECRET_KEY);
+    req.user = verified;
+    next();
+  } catch (error) {
+    res.status(400).json({ message: 'Invalid Token' });
+  }
+}
+
+app.get('/hello', async (req, res) => {
+  await client.connect();
+  const db = client.db('black-licorice');
+  const items = await db.collection('items').find({}).toArray();
+  res.send(items);
+});
+
+// API route to update the logged-in user's ad account ID
+app.post('/update-account-id', authenticateToken, async (req, res) => {
+  const { accountId } = req.body;
+
+  try {
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+    
+    const email = req.user.email;
+    
+    await usersCollection.updateOne({ email }, { $set: { accountId } });
+    
+    res.status(200).json({ message: 'Account ID updated successfully' });
+  } catch (error) {
+    console.error('Error updating account ID:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+// API route to fetch the logged-in user's profile
+app.get('/user-profile', authenticateToken, async (req, res) => {
+  try {
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+    
+    const email = req.user.email;
+    
+    const user = await usersCollection.findOne({ email }, { projection: { _id: 0, email: 1, accountId: 1 } });
+    
+    if (user) {
+      res.status(200).json(user);
+    } else {
+      res.status(404).json({ message: 'User not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching user profile:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
 // User registration route
 app.post('/signup', async (req, res) => {
-  console.log('Signup request received:', req.body); // Log the request
   const { email, password, rePassword } = req.body;
   
   if (password !== rePassword) {
@@ -70,7 +140,7 @@ app.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'Invalid email or password' });
     }
 
-    const token = jwt.sign({ userId: user.userId }, SECRET_KEY, { expiresIn: '1h' });
+    const token = jwt.sign({ email: user.email, userId: user.userId }, SECRET_KEY, { expiresIn: '1h' });
 
     res.json({ token });
   } catch (error) {
@@ -78,22 +148,6 @@ app.post('/login', async (req, res) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
-
-
-// Middleware to authenticate token
-function authenticateToken(req, res, next) {
-  const token = req.headers['authorization'];
-
-  if (!token) return res.status(401).json({ message: 'Access Denied' });
-
-  try {
-    const verified = jwt.verify(token, SECRET_KEY);
-    req.user = verified;
-    next();
-  } catch (error) {
-    res.status(400).json({ message: 'Invalid Token' });
-  }
-}
 
 app.get('/get-current-campaigns', async (req, res) => {
   try {
@@ -244,13 +298,12 @@ app.get('/linkedin', async (req, res) => {
   const startDate = new Date(start);
   const endDate = new Date(end);
 
-  let url = `https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:${startDate.getFullYear()},month:${startDate.getMonth() + 1},day:${startDate.getDate()}),end:(year:${endDate.getFullYear()},month:${endDate.getMonth() + 1},day:${endDate.getDate()}))&timeGranularity=DAILY&pivot=CAMPAIGN&accounts=List(urn%3Ali%3AsponsoredAccount%3A512388408)&fields=externalWebsiteConversions,dateRange,impressions,landingPageClicks,likes,shares,costInLocalCurrency,approximateUniqueImpressions,pivotValues`;
+  let url = `https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:${startDate.getFullYear()},month:${startDate.getMonth() + 1},day:${startDate.getDate()}),end:(year:${endDate.getFullYear()},month:${endDate.getMonth() + 1},day:${endDate.getDate()}))&timeGranularity=DAILY&pivot=CAMPAIGN&accounts=List(urn%3Ali%3AsponsoredAccount%3A${userAdAccountID})&fields=externalWebsiteConversions,dateRange,impressions,landingPageClicks,likes,shares,costInLocalCurrency,approximateUniqueImpressions,pivotValues`;
 
   if (campaigns) {
     url += `&campaigns=${campaigns}`;
   }
 
-  const token = 'AQV_sv7464y5sYabV-HsMa9Pn3LPLlP9FwU7Ipu4uQH4Mvc6CgTfcLh2PC26WbI_nscTNnOmSiokgemWAlXG5i-ryx3OLkDMt3IkPG0mlXI6MJDHDlac8bvVjez8iaE3e2VA6xF3eg3aND4b9XrzlPwMU9xXOXHrgxY78dztAUS51ty1LDDc8_zbbmYWtTodY1FruLbvWJrzX2O5cOspK28pMpNAVj348MIitHCNy3bfS4XhjumFcpY8apapvTSyFF__5GVJswxdLzLxcT-CE2cRlenSPKjw4HcMvYgcvO4Glx0Dt_RtPfUmdTEty7vq2KbnQNCiNIQ2ZSbLAdcP8xo0u_lCAg';
 
   try {
     const response = await axios.get(url, {
@@ -268,8 +321,7 @@ app.get('/linkedin', async (req, res) => {
 });
 
 app.get('/ad-account-name', async (req, res) => {
-  const url = 'https://api.linkedin.com/rest/adAccounts/512388408';
-  const token = 'AQV_sv7464y5sYabV-HsMa9Pn3LPLlP9FwU7Ipu4uQH4Mvc6CgTfcLh2PC26WbI_nscTNnOmSiokgemWAlXG5i-ryx3OLkDMt3IkPG0mlXI6MJDHDlac8bvVjez8iaE3e2VA6xF3eg3aND4b9XrzlPwMU9xXOXHrgxY78dztAUS51ty1LDDc8_zbbmYWtTodY1FruLbvWJrzX2O5cOspK28pMpNAVj348MIitHCNy3bfS4XhjumFcpY8apapvTSyFF__5GVJswxdLzLxcT-CE2cRlenSPKjw4HcMvYgcvO4Glx0Dt_RtPfUmdTEty7vq2KbnQNCiNIQ2ZSbLAdcP8xo0u_lCAg';
+  const url = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}`;
 
   try {
     const response = await axios.get(url, {
@@ -288,8 +340,8 @@ app.get('/ad-account-name', async (req, res) => {
 });
 
 app.get('/linkedin/ad-campaigns', async (req, res) => {
-  const apiUrl = 'https://api.linkedin.com/rest/adAccounts/512388408/adCampaigns?q=search&sortOrder=DESCENDING';
-  const token = 'AQV_sv7464y5sYabV-HsMa9Pn3LPLlP9FwU7Ipu4uQH4Mvc6CgTfcLh2PC26WbI_nscTNnOmSiokgemWAlXG5i-ryx3OLkDMt3IkPG0mlXI6MJDHDlac8bvVjez8iaE3e2VA6xF3eg3aND4b9XrzlPwMU9xXOXHrgxY78dztAUS51ty1LDDc8_zbbmYWtTodY1FruLbvWJrzX2O5cOspK28pMpNAVj348MIitHCNy3bfS4XhjumFcpY8apapvTSyFF__5GVJswxdLzLxcT-CE2cRlenSPKjw4HcMvYgcvO4Glx0Dt_RtPfUmdTEty7vq2KbnQNCiNIQ2ZSbLAdcP8xo0u_lCAg';
+
+  const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
 
   try {
     const response = await axios.get(apiUrl, {
@@ -320,8 +372,7 @@ app.get('/get-all-changes', async (req, res) => {
 });
 
 app.get('/linkedin/ad-campaign-groups', async (req, res) => {
-  const apiUrl = 'https://api.linkedin.com/rest/adAccounts/512388408/adCampaignGroups?q=search&search=(status:(values:List(ACTIVE,ARCHIVED,CANCELED,DRAFT,PAUSED,PENDING_DELETION,REMOVED)))&sortOrder=DESCENDING';
-  const token = 'AQV_sv7464y5sYabV-HsMa9Pn3LPLlP9FwU7Ipu4uQH4Mvc6CgTfcLh2PC26WbI_nscTNnOmSiokgemWAlXG5i-ryx3OLkDMt3IkPG0mlXI6MJDHDlac8bvVjez8iaE3e2VA6xF3eg3aND4b9XrzlPwMU9xXOXHrgxY78dztAUS51ty1LDDc8_zbbmYWtTodY1FruLbvWJrzX2O5cOspK28pMpNAVj348MIitHCNy3bfS4XhjumFcpY8apapvTSyFF__5GVJswxdLzLxcT-CE2cRlenSPKjw4HcMvYgcvO4Glx0Dt_RtPfUmdTEty7vq2KbnQNCiNIQ2ZSbLAdcP8xo0u_lCAg';
+  const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaignGroups?q=search&search=(status:(values:List(ACTIVE,ARCHIVED,CANCELED,DRAFT,PAUSED,PENDING_DELETION,REMOVED)))&sortOrder=DESCENDING`;
 
   try {
     const response = await axios.get(apiUrl, {
@@ -358,3 +409,7 @@ app.listen(8000, () => {
 
 // https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:2024,month:6,day:1),end:(year:2024,month:6,day:24))&timeGranularity=MONTHLY&accounts=List(urn%3Ali%3AsponsoredAccount%3A512388408)&campaigns=List(urn%3Ali%3AsponsoredCampaign%3A314706446,urn%3Ali%3AsponsoredCampaign%3A320888526,urn%3Ali%3AsponsoredCampaign%3A320931536)&pivot=CAMPAIGN&fields=externalWebsiteConversions,dateRange,impressions,landingPageClicks,likes,shares,costInLocalCurrency,approximateUniqueImpressions
 // Newest https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:2024,month:6,day:1),end:(year:2024,month:6,day:24))&timeGranularity=MONTHLY&accounts=List(urn%3Ali%3AsponsoredAccount%3A512388408)&campaigns=List(urn%3Ali%3AsponsoredCampaign%3A314706446,urn%3Ali%3AsponsoredCampaign%3A320888526,urn%3Ali%3AsponsoredCampaign%3A320931536)&pivot=CAMPAIGN&fields=externalWebsiteConversions,dateRange,impressions,landingPageClicks,likes,shares,costInLocalCurrency,approximateUniqueImpressions,pivotValues
+
+
+// Get user list
+// https://api.linkedin.com/rest/adAccountUsers?q=accounts&accounts=List(urn%3Ali%3AsponsoredAccount%3A512388408)
