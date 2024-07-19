@@ -13,7 +13,6 @@ const SECRET_KEY = '10e9b23966ddb67730a76de7cbaa4f58b06f18a8d11d181888d4ee5b3412
 const token = 'AQV_sv7464y5sYabV-HsMa9Pn3LPLlP9FwU7Ipu4uQH4Mvc6CgTfcLh2PC26WbI_nscTNnOmSiokgemWAlXG5i-ryx3OLkDMt3IkPG0mlXI6MJDHDlac8bvVjez8iaE3e2VA6xF3eg3aND4b9XrzlPwMU9xXOXHrgxY78dztAUS51ty1LDDc8_zbbmYWtTodY1FruLbvWJrzX2O5cOspK28pMpNAVj348MIitHCNy3bfS4XhjumFcpY8apapvTSyFF__5GVJswxdLzLxcT-CE2cRlenSPKjw4HcMvYgcvO4Glx0Dt_RtPfUmdTEty7vq2KbnQNCiNIQ2ZSbLAdcP8xo0u_lCAg';
 
 
-const userAdAccountID = '512388408'
 
 
 const app = express(); 
@@ -25,17 +24,25 @@ app.get('/hello', async (req, res) => {
   const items = await db.collection('items').find({}).toArray();
   res.send(items);
 });
-
-// Middleware to authenticate token
-function authenticateToken(req, res, next) {
+// Middleware to authenticate token and fetch user's Ad Account ID
+async function authenticateToken(req, res, next) {
   const token = req.headers['authorization'] && req.headers['authorization'].split(' ')[1];
-  console.log("🐒 ~ token:", token)
 
   if (!token) return res.status(401).json({ message: 'Access Denied' });
 
   try {
     const verified = jwt.verify(token, SECRET_KEY);
     req.user = verified;
+
+    // Fetch the Ad Account ID from the database
+    await client.connect();
+    const db = client.db('black-licorice');
+    const user = await db.collection('users').findOne({ email: verified.email });
+
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    req.userAdAccountID = user.accountId;
+
     next();
   } catch (error) {
     res.status(400).json({ message: 'Invalid Token' });
@@ -91,10 +98,14 @@ app.get('/user-profile', authenticateToken, async (req, res) => {
 
 // User registration route
 app.post('/signup', async (req, res) => {
-  const { email, password, rePassword } = req.body;
+  const { email, password, rePassword, accountId } = req.body;
   
   if (password !== rePassword) {
     return res.status(400).json({ message: 'Passwords do not match' });
+  }
+
+  if (!/^\d{9}$/.test(accountId)) {
+    return res.status(400).json({ message: 'Account ID must be a 9-digit number' });
   }
 
   try {
@@ -110,11 +121,14 @@ app.post('/signup', async (req, res) => {
     const newUser = {
       email,
       password: hashedPassword,
+      accountId, // Save accountId to the user profile
       userId: uuidv4(),
     };
 
     await usersCollection.insertOne(newUser);
-    res.status(201).json({ message: 'User registered successfully' });
+    const token = jwt.sign({ email: newUser.email, userId: newUser.userId }, SECRET_KEY, { expiresIn: '1h' });
+    
+    res.status(201).json({ token });
   } catch (error) {
     console.error('Error registering user:', error);
     res.status(500).json({ message: 'Internal Server Error' });
@@ -149,39 +163,45 @@ app.post('/login', async (req, res) => {
   }
 });
 
-app.get('/get-current-campaigns', async (req, res) => {
+// Get campaigns for the logged-in user
+app.get('/get-current-campaigns', authenticateToken, async (req, res) => {
+  const userId = req.user.userId;
+
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const currentCampaigns = await db.collection('campaigns').findOne({});
-    res.json(currentCampaigns || { elements: [] });
+    const userCampaigns = await db.collection('campaigns').findOne({ userId });
+
+    res.json(userCampaigns || { elements: [] });
   } catch (error) {
     console.error('Error fetching current campaigns from database:', error);
     res.status(500).send('Internal Server Error');
   }
 });
 
-app.post('/save-campaigns', async (req, res) => {
+// Save campaigns for the logged-in user
+app.post('/save-campaigns', authenticateToken, async (req, res) => {
   const { campaigns } = req.body;
+  const userId = req.user.userId;
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
     const collection = db.collection('campaigns');
 
-    // Check if a document with the same data already exists
-    const existingDoc = await collection.findOne({});
+    // Check if a document for the user already exists
+    const existingDoc = await collection.findOne({ userId });
 
     if (existingDoc) {
       // Update the existing document
       await collection.updateOne(
-        { _id: existingDoc._id },
+        { userId },
         { $set: { elements: campaigns } }
       );
       res.send('Campaigns updated successfully');
     } else {
       // Insert a new document
-      await collection.insertOne({ elements: campaigns });
+      await collection.insertOne({ userId, elements: campaigns });
       res.send('Campaigns saved successfully');
     }
   } catch (error) {
@@ -190,16 +210,38 @@ app.post('/save-campaigns', async (req, res) => {
   }
 });
 
-app.post('/save-changes', async (req, res) => {
+app.post('/save-changes', authenticateToken, async (req, res) => {
   const { changes } = req.body;
+  const userId = req.user.userId;
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
     const changesCollection = db.collection('changes');
 
-    for (const change of changes) {
-      await changesCollection.insertOne(change);
+    const existingUserChanges = await changesCollection.findOne({ userId });
+
+    if (existingUserChanges) {
+      // Only add unique changes
+      const uniqueChanges = changes.filter(newChange => 
+        !existingUserChanges.changes.some(existingChange => 
+          existingChange.campaign === newChange.campaign && 
+          existingChange.date === newChange.date && 
+          existingChange.changes === newChange.changes
+        )
+      );
+
+      if (uniqueChanges.length > 0) {
+        await changesCollection.updateOne(
+          { userId },
+          { $push: { changes: { $each: uniqueChanges } } }
+        );
+      }
+    } else {
+      await changesCollection.insertOne({
+        userId,
+        changes,
+      });
     }
     res.send('Changes saved successfully');
   } catch (error) {
@@ -280,30 +322,37 @@ app.post('/delete-note', async (req, res) => {
 });
 
 
-app.get('/get-all-changes', async (req, res) => {
+app.get('/get-all-changes', authenticateToken, async (req, res) => {
+  const userId = req.user.userId; // Assuming the user ID is stored in the token
+
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const changes = await db.collection('changes').find({}).toArray();
-    res.json(changes);
+    const userChanges = await db.collection('changes').findOne({ userId });
+
+    if (userChanges) {
+      res.json(userChanges.changes);
+    } else {
+      res.json([]); // Return an empty array if no changes are found
+    }
   } catch (error) {
     console.error('Error fetching changes from MongoDB:', error);
     res.status(500).send('Internal Server Error');
   }
 });
 
-app.get('/linkedin', async (req, res) => {
+app.get('/linkedin', authenticateToken, async (req, res) => {
   const { start, end, campaigns } = req.query;
-  
+
   const startDate = new Date(start);
   const endDate = new Date(end);
+  const userAdAccountID = req.userAdAccountID;
 
   let url = `https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:${startDate.getFullYear()},month:${startDate.getMonth() + 1},day:${startDate.getDate()}),end:(year:${endDate.getFullYear()},month:${endDate.getMonth() + 1},day:${endDate.getDate()}))&timeGranularity=DAILY&pivot=CAMPAIGN&accounts=List(urn%3Ali%3AsponsoredAccount%3A${userAdAccountID})&fields=externalWebsiteConversions,dateRange,impressions,landingPageClicks,likes,shares,costInLocalCurrency,approximateUniqueImpressions,pivotValues`;
 
   if (campaigns) {
     url += `&campaigns=${campaigns}`;
   }
-
 
   try {
     const response = await axios.get(url, {
@@ -320,7 +369,9 @@ app.get('/linkedin', async (req, res) => {
   }
 });
 
-app.get('/ad-account-name', async (req, res) => {
+app.get('/ad-account-name', authenticateToken, async (req, res) => {
+  const userAdAccountID = req.userAdAccountID;
+  console.log("🐒 ~ userAdAccountID:", userAdAccountID)
   const url = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}`;
 
   try {
@@ -339,7 +390,8 @@ app.get('/ad-account-name', async (req, res) => {
   }
 });
 
-app.get('/linkedin/ad-campaigns', async (req, res) => {
+app.get('/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
+  const userAdAccountID = req.userAdAccountID;
 
   const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
 
