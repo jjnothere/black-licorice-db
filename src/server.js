@@ -24,7 +24,7 @@ app.get('/hello', async (req, res) => {
   const items = await db.collection('items').find({}).toArray();
   res.send(items);
 });
-// Middleware to authenticate token and fetch user's Ad Account ID
+
 async function authenticateToken(req, res, next) {
   const token = req.headers['authorization'] && req.headers['authorization'].split(' ')[1];
 
@@ -34,7 +34,6 @@ async function authenticateToken(req, res, next) {
     const verified = jwt.verify(token, SECRET_KEY);
     req.user = verified;
 
-    // Fetch the Ad Account ID from the database
     await client.connect();
     const db = client.db('black-licorice');
     const user = await db.collection('users').findOne({ email: verified.email });
@@ -42,7 +41,6 @@ async function authenticateToken(req, res, next) {
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     req.userAdAccountID = user.accountId;
-
     next();
   } catch (error) {
     res.status(400).json({ message: 'Invalid Token' });
@@ -219,15 +217,26 @@ app.post('/save-changes', authenticateToken, async (req, res) => {
     const db = client.db('black-licorice');
     const changesCollection = db.collection('changes');
 
+    // Add an _id to each change if it doesn't have one
+    const changesWithIds = changes.map(change => {
+      if (!change._id) {
+        change._id = new ObjectId();
+      } else {
+        change._id = new ObjectId(change._id); // Ensure _id is of type ObjectId
+      }
+      return change;
+    });
+
     const existingUserChanges = await changesCollection.findOne({ userId });
 
     if (existingUserChanges) {
       // Only add unique changes
-      const uniqueChanges = changes.filter(newChange => 
+      const uniqueChanges = changesWithIds.filter(newChange => 
         !existingUserChanges.changes.some(existingChange => 
-          existingChange.campaign === newChange.campaign && 
+          existingChange._id.equals(newChange._id) || 
+          (existingChange.campaign === newChange.campaign && 
           existingChange.date === newChange.date && 
-          existingChange.changes === newChange.changes
+          existingChange.changes === newChange.changes)
         )
       );
 
@@ -240,7 +249,7 @@ app.post('/save-changes', authenticateToken, async (req, res) => {
     } else {
       await changesCollection.insertOne({
         userId,
-        changes,
+        changes: changesWithIds,
       });
     }
     res.send('Changes saved successfully');
@@ -250,17 +259,19 @@ app.post('/save-changes', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/update-notes', async (req, res) => {
-  const { id, newNote } = req.body;
-  const note = { note: newNote, timestamp: new Date().toISOString() };
+// Add Note Endpoint
+app.post('/add-note', authenticateToken, async (req, res) => {
+  const { changeId, newNote } = req.body;
+  const note = { _id: new ObjectId(), note: newNote, timestamp: new Date().toISOString() };
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
     const result = await db.collection('changes').updateOne(
-      { _id: new ObjectId(id) },
-      { $push: { notes: note } }
+      { "changes._id": new ObjectId(changeId) },
+      { $push: { 'changes.$.notes': note } }
     );
+
     if (result.matchedCount === 0) {
       res.status(404).send('Document not found');
     } else {
@@ -272,58 +283,71 @@ app.post('/update-notes', async (req, res) => {
   }
 });
 
-app.post('/edit-note', async (req, res) => {
-  const { id, noteIndex, updatedNote } = req.body;
+// Edit Note Endpoint
+app.post('/edit-note', authenticateToken, async (req, res) => {
+  const { changeId, noteId, updatedNote } = req.body;
+
+  console.log('Received request to edit note:', { changeId, noteId, updatedNote });
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const change = await db.collection('changes').findOne({ _id: new ObjectId(id) });
-    if (!change) {
-      res.status(404).send('Document not found');
-      return;
-    }
-    change.notes[noteIndex].note = updatedNote;
-    change.notes[noteIndex].timestamp = new Date().toISOString();
 
-    await db.collection('changes').updateOne(
-      { _id: new ObjectId(id) },
-      { $set: { notes: change.notes } }
+    const result = await db.collection('changes').updateOne(
+      { "changes._id": new ObjectId(changeId), "changes.notes._id": new ObjectId(noteId) },
+      { 
+        $set: { 
+          "changes.$[changeElem].notes.$[noteElem].note": updatedNote,
+          "changes.$[changeElem].notes.$[noteElem].timestamp": new Date().toISOString()
+        } 
+      },
+      {
+        arrayFilters: [
+          { "changeElem._id": new ObjectId(changeId) },
+          { "noteElem._id": new ObjectId(noteId) }
+        ]
+      }
     );
-    res.send('Note updated successfully');
+
+    if (result.matchedCount === 0) {
+      console.log('Document not found:', { changeId, noteId });
+      res.status(404).send('Document not found');
+    } else {
+      res.send('Note updated successfully');
+    }
   } catch (error) {
     console.error('Error updating note in MongoDB:', error);
     res.status(500).send('Internal Server Error');
   }
 });
 
-app.post('/delete-note', async (req, res) => {
-  const { id, noteIndex } = req.body;
+// Delete Note Endpoint
+app.post('/delete-note', authenticateToken, async (req, res) => {
+  const { changeId, noteId } = req.body;
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const change = await db.collection('changes').findOne({ _id: new ObjectId(id) });
-    if (!change) {
-      res.status(404).send('Document not found');
-      return;
-    }
-    change.notes.splice(noteIndex, 1);
 
-    await db.collection('changes').updateOne(
-      { _id: new ObjectId(id) },
-      { $set: { notes: change.notes } }
+    const result = await db.collection('changes').updateOne(
+      { "changes._id": new ObjectId(changeId) },
+      { $pull: { "changes.$.notes": { _id: new ObjectId(noteId) } } }
     );
-    res.send('Note deleted successfully');
+
+    if (result.matchedCount === 0) {
+      res.status(404).send('Document not found');
+    } else {
+      res.send('Note deleted successfully');
+    }
   } catch (error) {
     console.error('Error deleting note from MongoDB:', error);
     res.status(500).send('Internal Server Error');
   }
 });
 
-
+// Get all changes for the authenticated user
 app.get('/get-all-changes', authenticateToken, async (req, res) => {
-  const userId = req.user.userId; // Assuming the user ID is stored in the token
+  const userId = req.user.userId;
 
   try {
     await client.connect();
@@ -371,7 +395,6 @@ app.get('/linkedin', authenticateToken, async (req, res) => {
 
 app.get('/ad-account-name', authenticateToken, async (req, res) => {
   const userAdAccountID = req.userAdAccountID;
-  console.log("🐒 ~ userAdAccountID:", userAdAccountID)
   const url = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}`;
 
   try {
