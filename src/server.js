@@ -15,15 +15,14 @@ const SECRET_KEY = '10e9b23966ddb67730a76de7cbaa4f58b06f18a8d11d181888d4ee5b3412
 const token = 'AQU1oNqFz2fKHe-A-XdXPHvjkOBbmKPJ9RRhAdAzKmWG-3sfKrscGgtxgpQRj3c3E7KGoD1FmXpqANLstB6rcO9rnKklfqYt9hQfdC7MdvDqOQuR96c4Qmf4fPeHbwxCW4Ay5d-l-v8WC-HC_hm0YJ9STIi6zVmhooBq8wPt-wKWhH3QGUuXANljVZxazsgA2N5vu_2ynjfRHG7YcPMnkAkdeqSFqlxJ-In5zrDO7kKdjjMrK4oP1GKFgO-mSzTSkEoqT55__MXv9E5xPVHUxyTdJ0rThtkBTp8YaxUMK1p2TyJOKY0PC54alqbvo5VI8orTd4rhRQt5aoHNbPdI-ms9sgMNiw';
 // rf AQUcMDVwnfzMXs6_oRe67OxcrOhYrMrVco2vHh7mybvvWbxJ8LbWdN9evnnm0a5_DLlimngrbLWXjGoxlSPlx0AXsNhPbmMEztKUtgiBK3hp8qGNkZYeyY7ZlV0ljOmHZNxr-r8BIkOg5ARvmuUsUerWMkMzEFSTWtmvQnKf4f6YCn7vD7A1QmkXHr5ZjsvS7sCybreVSNAwBiCHC2BfZnCPWraIANlFqrFiNpnE5gKY7g73M-0CD9PMLLo5RR4SeBrgbeyb8OwjUESB7pMmlgNxrpOdzFG9K4dtWs_fGg46pZoAx_XSkPKwhYBjHWp4DG6Fy-5Grq0ccUR1YAf8Yyf0zkrhFw
 
-
-
+// Initialize Express app
 const app = express(); 
 app.use(express.json());
 
 // Serve static files from the Vue app's build directory
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, '../public')));
 
 app.get('/hello', async (req, res) => {
   await client.connect();
