@@ -472,7 +472,7 @@ app.get('/linkedin/ad-campaign-groups', async (req, res) => {
 
 // Serve the frontend
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.sendFile(path.join(__dirname, '../public', 'index.html'));
 });
 
 // Start the server
