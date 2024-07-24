@@ -1,22 +1,29 @@
 import express from 'express';
-const axios = require('axios');
+import axios from 'axios';
 import { MongoClient, ObjectId } from 'mongodb';
 import bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 const url = 'mongodb+srv://jjnothere:GREATpoop^6^@black-licorice-cluster.5hb9ank.mongodb.net/?retryWrites=true&w=majority&appName=black-licorice-cluster';
 const client = new MongoClient(url);
 const SECRET_KEY = '10e9b23966ddb67730a76de7cbaa4f58b06f18a8d11d181888d4ee5b3412d06b';
 
 
-const token = 'AQV_sv7464y5sYabV-HsMa9Pn3LPLlP9FwU7Ipu4uQH4Mvc6CgTfcLh2PC26WbI_nscTNnOmSiokgemWAlXG5i-ryx3OLkDMt3IkPG0mlXI6MJDHDlac8bvVjez8iaE3e2VA6xF3eg3aND4b9XrzlPwMU9xXOXHrgxY78dztAUS51ty1LDDc8_zbbmYWtTodY1FruLbvWJrzX2O5cOspK28pMpNAVj348MIitHCNy3bfS4XhjumFcpY8apapvTSyFF__5GVJswxdLzLxcT-CE2cRlenSPKjw4HcMvYgcvO4Glx0Dt_RtPfUmdTEty7vq2KbnQNCiNIQ2ZSbLAdcP8xo0u_lCAg';
-
+const token = 'AQU1oNqFz2fKHe-A-XdXPHvjkOBbmKPJ9RRhAdAzKmWG-3sfKrscGgtxgpQRj3c3E7KGoD1FmXpqANLstB6rcO9rnKklfqYt9hQfdC7MdvDqOQuR96c4Qmf4fPeHbwxCW4Ay5d-l-v8WC-HC_hm0YJ9STIi6zVmhooBq8wPt-wKWhH3QGUuXANljVZxazsgA2N5vu_2ynjfRHG7YcPMnkAkdeqSFqlxJ-In5zrDO7kKdjjMrK4oP1GKFgO-mSzTSkEoqT55__MXv9E5xPVHUxyTdJ0rThtkBTp8YaxUMK1p2TyJOKY0PC54alqbvo5VI8orTd4rhRQt5aoHNbPdI-ms9sgMNiw';
+// rf AQUcMDVwnfzMXs6_oRe67OxcrOhYrMrVco2vHh7mybvvWbxJ8LbWdN9evnnm0a5_DLlimngrbLWXjGoxlSPlx0AXsNhPbmMEztKUtgiBK3hp8qGNkZYeyY7ZlV0ljOmHZNxr-r8BIkOg5ARvmuUsUerWMkMzEFSTWtmvQnKf4f6YCn7vD7A1QmkXHr5ZjsvS7sCybreVSNAwBiCHC2BfZnCPWraIANlFqrFiNpnE5gKY7g73M-0CD9PMLLo5RR4SeBrgbeyb8OwjUESB7pMmlgNxrpOdzFG9K4dtWs_fGg46pZoAx_XSkPKwhYBjHWp4DG6Fy-5Grq0ccUR1YAf8Yyf0zkrhFw
 
 
 
 const app = express(); 
 app.use(express.json());
+
+// Serve static files from the Vue app's build directory
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/hello', async (req, res) => {
   await client.connect();
@@ -464,8 +471,15 @@ app.get('/linkedin/ad-campaign-groups', async (req, res) => {
   }
 });
 
-app.listen(8000, () => {
-  console.log('Server is listening on port 8000');
+// Serve the frontend
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Start the server
+const PORT = process.env.PORT || 8000;
+app.listen(PORT, () => {
+  console.log(`Server is listening on port ${PORT}`);
 });
 
 

@@ -1,10 +1,12 @@
 {
   "name": "black-licorice-db",
   "version": "1.0.0",
-  "main": "index.js",
+  "type": "module",
+  "main": "src/server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "npx nodemon --exec npx babel-node src/server.js"
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js"
   },
   "keywords": [],
   "author": "",
