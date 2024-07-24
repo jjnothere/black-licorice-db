@@ -6,10 +6,12 @@ import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import cors from 'cors';
 
 const url = 'mongodb+srv://jjnothere:GREATpoop^6^@black-licorice-cluster.5hb9ank.mongodb.net/?retryWrites=true&w=majority&appName=black-licorice-cluster';
 const client = new MongoClient(url);
 const SECRET_KEY = '10e9b23966ddb67730a76de7cbaa4f58b06f18a8d11d181888d4ee5b3412d06b';
+
 
 
 const token = 'AQU1oNqFz2fKHe-A-XdXPHvjkOBbmKPJ9RRhAdAzKmWG-3sfKrscGgtxgpQRj3c3E7KGoD1FmXpqANLstB6rcO9rnKklfqYt9hQfdC7MdvDqOQuR96c4Qmf4fPeHbwxCW4Ay5d-l-v8WC-HC_hm0YJ9STIi6zVmhooBq8wPt-wKWhH3QGUuXANljVZxazsgA2N5vu_2ynjfRHG7YcPMnkAkdeqSFqlxJ-In5zrDO7kKdjjMrK4oP1GKFgO-mSzTSkEoqT55__MXv9E5xPVHUxyTdJ0rThtkBTp8YaxUMK1p2TyJOKY0PC54alqbvo5VI8orTd4rhRQt5aoHNbPdI-ms9sgMNiw';
@@ -18,6 +20,15 @@ const token = 'AQU1oNqFz2fKHe-A-XdXPHvjkOBbmKPJ9RRhAdAzKmWG-3sfKrscGgtxgpQRj3c3E
 // Initialize Express app
 const app = express(); 
 app.use(express.json());
+
+
+
+// Enable CORS for development
+if (process.env.NODE_ENV !== 'production') {
+  app.use(cors({ origin: 'http://localhost:5173' }));
+}
+
+
 
 // Serve static files from the Vue app's build directory
 const __filename = fileURLToPath(import.meta.url);
@@ -139,8 +150,15 @@ app.post('/signup', async (req, res) => {
   }
 });
 
+// Simple test route
+app.get('/test', (req, res) => {
+  res.json({ message: 'Server is working!' });
+});
+
+
 // User login route
 app.post('/login', async (req, res) => {
+  console.log('test')
   const { email, password } = req.body;
 
   try {
