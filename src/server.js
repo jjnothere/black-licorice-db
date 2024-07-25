@@ -158,7 +158,6 @@ app.get('/test', (req, res) => {
 
 // User login route
 app.post('/login', async (req, res) => {
-  console.log('test')
   const { email, password } = req.body;
 
   try {
@@ -202,35 +201,35 @@ app.get('/get-current-campaigns', authenticateToken, async (req, res) => {
 });
 
 // Save campaigns for the logged-in user
-app.post('/save-campaigns', authenticateToken, async (req, res) => {
-  const { campaigns } = req.body;
-  const userId = req.user.userId;
+// app.post('/save-campaigns', authenticateToken, async (req, res) => {
+//   const { campaigns } = req.body;
+//   const userId = req.user.userId;
 
-  try {
-    await client.connect();
-    const db = client.db('black-licorice');
-    const collection = db.collection('campaigns');
+//   try {
+//     await client.connect();
+//     const db = client.db('black-licorice');
+//     const collection = db.collection('campaigns');
 
-    // Check if a document for the user already exists
-    const existingDoc = await collection.findOne({ userId });
+//     // Check if a document for the user already exists
+//     const existingDoc = await collection.findOne({ userId });
 
-    if (existingDoc) {
-      // Update the existing document
-      await collection.updateOne(
-        { userId },
-        { $set: { elements: campaigns } }
-      );
-      res.send('Campaigns updated successfully');
-    } else {
-      // Insert a new document
-      await collection.insertOne({ userId, elements: campaigns });
-      res.send('Campaigns saved successfully');
-    }
-  } catch (error) {
-    console.error('Error saving campaigns to MongoDB:', error);
-    res.status(500).send('Internal Server Error');
-  }
-});
+//     if (existingDoc) {
+//       // Update the existing document
+//       await collection.updateOne(
+//         { userId },
+//         { $set: { elements: campaigns } }
+//       );
+//       res.send('Campaigns updated successfully');
+//     } else {
+//       // Insert a new document
+//       await collection.insertOne({ userId, elements: campaigns });
+//       res.send('Campaigns saved successfully');
+//     }
+//   } catch (error) {
+//     console.error('Error saving campaigns to MongoDB:', error);
+//     res.status(500).send('Internal Server Error');
+//   }
+// });
 
 app.post('/save-changes', authenticateToken, async (req, res) => {
   const { changes } = req.body;
@@ -311,7 +310,6 @@ app.post('/add-note', authenticateToken, async (req, res) => {
 app.post('/edit-note', authenticateToken, async (req, res) => {
   const { changeId, noteId, updatedNote } = req.body;
 
-  console.log('Received request to edit note:', { changeId, noteId, updatedNote });
 
   try {
     await client.connect();
@@ -334,7 +332,6 @@ app.post('/edit-note', authenticateToken, async (req, res) => {
     );
 
     if (result.matchedCount === 0) {
-      console.log('Document not found:', { changeId, noteId });
       res.status(404).send('Document not found');
     } else {
       res.send('Note updated successfully');
@@ -369,7 +366,6 @@ app.post('/delete-note', authenticateToken, async (req, res) => {
   }
 });
 
-// Get all changes for the authenticated user
 app.get('/get-all-changes', authenticateToken, async (req, res) => {
   const userId = req.user.userId;
 
@@ -385,6 +381,36 @@ app.get('/get-all-changes', authenticateToken, async (req, res) => {
     }
   } catch (error) {
     console.error('Error fetching changes from MongoDB:', error);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+app.post('/save-campaigns', authenticateToken, async (req, res) => {
+  const { campaigns } = req.body;
+  const userId = req.user.userId;
+
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const collection = db.collection('campaigns');
+
+    // Check if a document for the user already exists
+    const existingDoc = await collection.findOne({ userId });
+
+    if (existingDoc) {
+      // Update the existing document
+      await collection.updateOne(
+        { userId },
+        { $set: { elements: campaigns } }
+      );
+      res.send('Campaigns updated successfully');
+    } else {
+      // Insert a new document
+      await collection.insertOne({ userId, elements: campaigns });
+      res.send('Campaigns saved successfully');
+    }
+  } catch (error) {
+    console.error('Error saving campaigns to MongoDB:', error);
     res.status(500).send('Internal Server Error');
   }
 });
@@ -496,7 +522,6 @@ app.get('*', (req, res) => {
 // Start the server
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
-  console.log(`Server is listening on port ${PORT}`);
 });
 
 
