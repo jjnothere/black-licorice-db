@@ -7,6 +7,9 @@ import jwt from 'jsonwebtoken';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import cors from 'cors';
+import cron from 'node-cron';
+import dotenv from 'dotenv';
+dotenv.config();
 
 const url = 'mongodb+srv://jjnothere:GREATpoop^6^@black-licorice-cluster.5hb9ank.mongodb.net/?retryWrites=true&w=majority&appName=black-licorice-cluster';
 const client = new MongoClient(url);
@@ -26,6 +29,150 @@ app.use(express.json());
 // Enable CORS for development
 if (process.env.NODE_ENV !== 'production') {
   app.use(cors({ origin: 'http://localhost:5173' }));
+}
+// Schedule the checkForChanges function to run every day at 2:15 PM
+cron.schedule('0 23 * * *', async () => {
+  console.log('Running checkForChanges task at 2:15 PM');
+  try {
+    await checkForChangesForAllUsers();
+  } catch (error) {
+    console.error('Error running checkForChanges task:', error);
+  }
+});
+
+async function checkForChangesForAllUsers() {
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+
+    const users = await usersCollection.find({}).toArray();
+
+    for (const user of users) {
+      console.log(`Checking changes for user: ${user.email}`);
+      await checkForChanges(user.userId, user.accountId, db);
+    }
+  } catch (error) {
+    console.error('Error in checkForChangesForAllUsers:', error);
+  }
+}
+
+async function checkForChanges(userId, userAdAccountID, db) {
+  try {
+    const differences = [];
+    const currentCampaigns = await fetchCurrentCampaigns(db, userId);
+    const linkedInCampaigns = await fetchLinkedInCampaigns(userAdAccountID);
+
+    console.log(`User ${userId} - Current campaigns: ${currentCampaigns.length}`);
+    console.log(`User ${userId} - LinkedIn campaigns: ${linkedInCampaigns.length}`);
+
+    const newDifferences = [];
+
+    linkedInCampaigns.forEach(campaign2 => {
+      const campaign1 = currentCampaigns.find(c => c.id === campaign2.id);
+      if (campaign1) {
+        const changes = [];
+        Object.keys(campaign1).forEach(key => {
+          if (key === 'changeAuditStamps') return; // Skip the changeAuditStamps object
+          if (JSON.stringify(campaign1[key]) !== JSON.stringify(campaign2[key])) {
+            changes.push(`${key}: <span class="old-value">${JSON.stringify(campaign2[key])}</span> => <span class="new-value">${JSON.stringify(campaign1[key])}</span>`);
+          }
+        });
+        if (changes.length > 0) {
+          newDifferences.push({
+            campaign: campaign2.name,
+            date: new Date().toLocaleDateString(),
+            changes: changes.join('<br>'),
+            notes: campaign2.notes || [],
+            addingNote: false,
+            _id: campaign1._id // Ensure we have the correct MongoDB ID
+          });
+        }
+      } else {
+        newDifferences.push({
+          campaign: campaign2.name,
+          date: new Date().toLocaleDateString(),
+          changes: `New campaign added: <span class="new-campaign">${campaign2.name}</span>`,
+          notes: campaign2.notes || [],
+          addingNote: false,
+          _id: campaign2._id // Include _id if available
+        });
+      }
+    });
+
+    const uniqueDifferences = newDifferences.filter(newDiff =>
+      !differences.some(existingDiff =>
+        existingDiff.campaign === newDiff.campaign &&
+        existingDiff.date === newDiff.date &&
+        existingDiff.changes === newDiff.changes
+      )
+    );
+
+    console.log(`User ${userId} - Unique differences: ${uniqueDifferences.length}`);
+
+    await saveCampaigns(db, linkedInCampaigns, userId);
+    await saveChanges(db, uniqueDifferences, userId);
+  } catch (error) {
+    console.error(`Error in checkForChanges for user ${userId}:`, error);
+  }
+}
+
+async function fetchCurrentCampaigns(db, userId) {
+  const userCampaigns = await db.collection('campaigns').findOne({ userId: userId });
+  return userCampaigns?.elements || [];
+}
+
+async function fetchLinkedInCampaigns(userAdAccountID) {
+  const response = await axios.get(`https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'X-RestLi-Protocol-Version': '2.0.0',
+      'LinkedIn-Version': '202406',
+    },
+  });
+  return response.data.elements || [];
+}
+
+async function saveCampaigns(db, campaigns, userId) {
+  const collection = db.collection('campaigns');
+  const existingDoc = await collection.findOne({ userId: userId });
+
+  if (existingDoc) {
+    await collection.updateOne({ userId: userId }, { $set: { elements: campaigns } });
+  } else {
+    await collection.insertOne({ userId: userId, elements: campaigns });
+  }
+}
+
+async function saveChanges(db, changes, userId) {
+  const collection = db.collection('changes');
+  const changesWithIds = changes.map(change => {
+    if (!change._id) {
+      change._id = new ObjectId();
+    } else {
+      change._id = new ObjectId(change._id); // Ensure _id is of type ObjectId
+    }
+    return change;
+  });
+
+  const existingUserChanges = await collection.findOne({ userId: userId });
+
+  if (existingUserChanges) {
+    const uniqueChanges = changesWithIds.filter(newChange =>
+      !existingUserChanges.changes.some(existingChange =>
+        existingChange._id.equals(newChange._id) ||
+        (existingChange.campaign === newChange.campaign &&
+          existingChange.date === newChange.date &&
+          existingChange.changes === newChange.changes)
+      )
+    );
+
+    if (uniqueChanges.length > 0) {
+      await collection.updateOne({ userId: userId }, { $push: { changes: { $each: uniqueChanges } } });
+    }
+  } else {
+    await collection.insertOne({ userId: userId, changes: changesWithIds });
+  }
 }
 
 
@@ -64,11 +211,48 @@ async function authenticateToken(req, res, next) {
   }
 }
 
-app.get('/hello', async (req, res) => {
-  await client.connect();
-  const db = client.db('black-licorice');
-  const items = await db.collection('items').find({}).toArray();
-  res.send(items);
+// Save budget endpoint
+app.post('/save-budget', authenticateToken, async (req, res) => {
+  const { budget } = req.body;
+  const userId = req.user.userId;
+
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+
+    await usersCollection.updateOne(
+      { userId: userId },
+      { $set: { budget: budget } }
+    );
+
+    res.status(200).json({ message: 'Budget saved successfully' });
+  } catch (error) {
+    console.error('Error saving budget:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+// Fetch budget endpoint
+app.get('/get-budget', authenticateToken, async (req, res) => {
+  const userId = req.user.userId;
+
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+
+    const user = await usersCollection.findOne({ userId: userId });
+
+    if (user) {
+      res.status(200).json({ budget: user.budget || 0 });
+    } else {
+      res.status(404).json({ message: 'User not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching budget:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
 });
 
 // API route to update the logged-in user's ad account ID
@@ -522,6 +706,7 @@ app.get('*', (req, res) => {
 // Start the server
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
 
 
