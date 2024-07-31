@@ -71,18 +71,15 @@ async function checkForChanges(userId, userAdAccountID, db) {
     linkedInCampaigns.forEach(campaign2 => {
       const campaign1 = currentCampaigns.find(c => c.id === campaign2.id);
       if (campaign1) {
-        const changes = [];
-        Object.keys(campaign1).forEach(key => {
-          if (key === 'changeAuditStamps') return; // Skip the changeAuditStamps object
-          if (JSON.stringify(campaign1[key]) !== JSON.stringify(campaign2[key])) {
-            changes.push(`${key}: <span class="old-value">${JSON.stringify(campaign2[key])}</span> => <span class="new-value">${JSON.stringify(campaign1[key])}</span>`);
-          }
-        });
-        if (changes.length > 0) {
+        const changes = findDifferences(campaign1, campaign2);
+        if (Object.keys(changes).length > 0) {
+          const changesString = Object.entries(changes)
+            .map(([key, value]) => `${key}: <span class="old-value">${JSON.stringify(value.old)}</span> => <span class="new-value">${JSON.stringify(value.new)}</span>`)
+            .join('<br>');
           newDifferences.push({
             campaign: campaign2.name,
             date: new Date().toLocaleDateString(),
-            changes: changes.join('<br>'),
+            changes: changesString,
             notes: campaign2.notes || [],
             addingNote: false,
             _id: campaign1._id // Ensure we have the correct MongoDB ID
@@ -143,6 +140,19 @@ async function saveCampaigns(db, campaigns, userId) {
     await collection.insertOne({ userId: userId, elements: campaigns });
   }
 }
+
+const findDifferences = (obj1, obj2, prefix = '') => {
+  const diffs = {};
+  for (const key in obj1) {
+    if (typeof obj1[key] === 'object' && typeof obj2[key] === 'object') {
+      const nestedDiffs = findDifferences(obj1[key], obj2[key], `${prefix}${key}.`);
+      Object.assign(diffs, nestedDiffs);
+    } else if (JSON.stringify(obj1[key]) !== JSON.stringify(obj2[key])) {
+      diffs[`${prefix}${key}`] = { old: obj1[key], new: obj2[key] };
+    }
+  }
+  return diffs;
+};
 
 async function saveChanges(db, changes, userId) {
   const collection = db.collection('changes');
