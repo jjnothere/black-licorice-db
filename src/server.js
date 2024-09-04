@@ -378,6 +378,71 @@ app.post('/login', async (req, res) => {
   }
 });
 
+// Backend route to delete a campaign group
+app.post('/delete-campaign-group', authenticateToken, async (req, res) => {
+  const { groupId } = req.body;
+  const userId = req.user.userId;
+
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+
+    // Remove the group from the user's campaignGroups array
+    await usersCollection.updateOne(
+      { userId: userId },
+      { $pull: { campaignGroups: { id: groupId } } }
+    );
+
+    res.status(200).json({ message: 'Campaign group deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting campaign group:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+app.get('/user-campaign-groups', authenticateToken, async (req, res) => {
+  const userId = req.user.userId;
+
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const user = await db.collection('users').findOne({ userId });
+
+    if (user) {
+      res.status(200).json({ groups: user.campaignGroups || [] });
+    } else {
+      res.status(404).json({ message: 'User not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching campaign groups:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+// Endpoint to save campaign groups to user doc
+app.post('/save-campaign-groups', authenticateToken, async (req, res) => {
+  const { group } = req.body; // Contains group details (name, campaignIds)
+  const userId = req.user.userId;
+
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+
+    // Update the user's campaignGroups field by adding the new group
+    await usersCollection.updateOne(
+      { userId: userId },
+      { $push: { campaignGroups: group } }
+    );
+
+    res.status(200).json({ message: 'Campaign group saved successfully' });
+  } catch (error) {
+    console.error('Error saving campaign group:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
 // Get campaigns for the logged-in user
 app.get('/get-current-campaigns', authenticateToken, async (req, res) => {
   const userId = req.user.userId;
