@@ -378,6 +378,34 @@ app.post('/login', async (req, res) => {
   }
 });
 
+// Backend route to update a campaign group
+app.post('/update-campaign-group', authenticateToken, async (req, res) => {
+  const { group } = req.body;
+  const userId = req.user.userId;
+
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+
+    // Update the user's campaign group in the campaignGroups array
+    await usersCollection.updateOne(
+      { userId: userId, 'campaignGroups.id': group.id },
+      {
+        $set: {
+          'campaignGroups.$.name': group.name,
+          'campaignGroups.$.budget': group.budget !== null ? group.budget : null, // Ensure budget is not set to null incorrectly
+          'campaignGroups.$.campaignIds': group.campaignIds,
+        },
+      }
+    );
+
+    res.status(200).json({ message: 'Campaign group updated successfully' });
+  } catch (error) {
+    console.error('Error updating campaign group:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
 // Backend route to delete a campaign group
 app.post('/delete-campaign-group', authenticateToken, async (req, res) => {
   const { groupId } = req.body;
