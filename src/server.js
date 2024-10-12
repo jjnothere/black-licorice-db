@@ -9,20 +9,173 @@ import { fileURLToPath } from 'url';
 import cors from 'cors';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
-dotenv.config();
+import passport from 'passport';
+import { Strategy as LinkedInStrategy } from 'passport-linkedin-oauth2';
+import session from 'express-session';
 
+dotenv.config(); // Load environment variables
+
+const app = express();
+app.use(express.json());
+app.use(cors()); // Enable CORS
+
+// Configure session middleware
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'someRandomSecretKey',
+  resave: false,
+  saveUninitialized: true
+}));
+
+// Initialize Passport for LinkedIn OAuth
+app.use(passport.initialize());
+app.use(passport.session());
+
+passport.serializeUser((user, done) => {
+  done(null, user);
+});
+
+passport.deserializeUser((obj, done) => {
+  done(null, obj);
+});
+
+// LinkedIn Strategy for OAuth 2.0
+passport.use(new LinkedInStrategy({
+  clientID: process.env.LINKEDIN_CLIENT_ID,
+  clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
+  callbackURL: "http://localhost:8000/auth/linkedin/callback",
+  scope: ['r_ads_reporting',
+          'w_member_social',
+          'r_ads',
+          'rw_ads',
+          'r_basicprofile'],
+}, (accessToken, refreshToken, profile, done) => {
+  // Pass both the profile and accessToken to be used in the callback
+  return done(null, { profile, accessToken });
+}));
+
+// LinkedIn authentication route
+app.get('/auth/linkedin', passport.authenticate('linkedin'));
+
+// LinkedIn callback route
+// LinkedIn callback route
+// LinkedIn callback route
+app.get('/auth/linkedin/callback',
+  passport.authenticate('linkedin', { failureRedirect: '/' }),
+  async (req, res) => {
+    const { accessToken, profile } = req.user;
+
+    // Check if the accessToken is available
+    if (!accessToken) {
+      console.error('Error: Access token not found');
+      return res.status(400).json({ error: 'Access token not found' });
+    }
+
+    // Extract necessary details from LinkedIn profile
+    const linkedinId = profile.id;  // Using linkedinId instead of email
+    const firstName = profile.name.givenName;
+    const lastName = profile.name.familyName;
+
+    try {
+      await client.connect();
+      const db = client.db('black-licorice');
+      const usersCollection = db.collection('users');
+
+      // Call LinkedIn API to fetch the user's ad accounts
+      const adAccountsUrl = `https://api.linkedin.com/rest/adAccountUsers?q=authenticatedUser`;
+      const adAccountsResponse = await axios.get(adAccountsUrl, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'X-RestLi-Protocol-Version': '2.0.0',
+          'LinkedIn-Version': '202406',
+        },
+      });
+
+      const adAccounts = adAccountsResponse.data.elements.map(account => ({
+        accountId: account.account,
+        role: account.role,
+      }));
+
+      // Check if user already exists in the database
+      const existingUser = await usersCollection.findOne({ linkedinId });
+
+      let user;
+
+      if (existingUser) {
+        // Update the user's access token and ad accounts
+        await usersCollection.updateOne(
+          { linkedinId },
+          {
+            $set: {
+              accessToken: accessToken,
+              firstName: firstName,
+              lastName: lastName,
+              lastLogin: new Date(),
+              adAccounts: adAccounts, // Save ad account info
+            },
+          }
+        );
+        user = existingUser;
+      } else {
+        // If user does not exist, create a new user
+        const newUser = {
+          linkedinId: linkedinId,
+          accessToken: accessToken,
+          firstName: firstName,
+          lastName: lastName,
+          userId: uuidv4(),  // Generate a unique userId
+          createdAt: new Date(),
+          adAccounts: adAccounts, // Save ad account info
+        };
+        await usersCollection.insertOne(newUser);
+        user = newUser;
+      }
+
+      // Generate a JWT token with linkedinId and userId (no email)
+      const token = jwt.sign(
+        {
+          linkedinId: user.linkedinId,
+          userId: user.userId,  // Include userId in the token
+        },
+        process.env.LINKEDIN_CLIENT_SECRET,
+        { expiresIn: '1h' }
+      );
+
+      // Redirect to the frontend with the access token in the query parameter
+      res.redirect(`http://localhost:5173/history?token=${token}`);
+    } catch (error) {
+      console.error('Error fetching ad accounts or saving user to the database:', error);
+      res.status(500).json({ message: 'Internal Server Error' });
+    }
+  }
+);
+// Token verification middleware
+const authenticateToken = (req, res, next) => {
+  const token = req.headers['authorization']?.split(' ')[1]; // Extract Bearer token
+  if (!token) return res.status(401).json({ message: 'Access Denied' });
+
+  try {
+    const verified = jwt.verify(token, process.env.LINKEDIN_CLIENT_SECRET);
+    req.user = verified; // Attach user info to the request
+    next(); // Proceed if token is valid
+  } catch (error) {
+    return res.status(403).json({ message: 'Invalid Token' });
+  }
+};
+
+// Test route
+app.get('/protected', authenticateToken, (req, res) => {
+  res.json({ message: 'You have access to protected route' });
+});
 const url = 'mongodb+srv://jjnothere:GREATpoop^6^@black-licorice-cluster.5hb9ank.mongodb.net/?retryWrites=true&w=majority&appName=black-licorice-cluster';
 const client = new MongoClient(url);
-const SECRET_KEY = '10e9b23966ddb67730a76de7cbaa4f58b06f18a8d11d181888d4ee5b3412d06b';
+// const LINKEDIN_CLIENT_SECRET = '10e9b23966ddb67730a76de7cbaa4f58b06f18a8d11d181888d4ee5b3412d06b';
 
 // test
 
-const token = 'AQXwqFy0cEEA9Di606cATO0NJ56KzGr75cZi-lfwLiL7rRYCqDitp-P2js3nX_tiWXY5vd2Yr8qJrYp1jQCwOa-j0hws_RGY7M5jyANYtR0IxrrGZlz8QhrZFi7PnQLr7qRgwiTru7Utz_jNNsDfaYzNW32lcbxskoGUKG6QeLclt8chdbiCuQAYYwFvgokm8Wx3-UhurZjgQrfHdIghBpQogNG650qG5r7WqQ-ROstfqOZYwVBxOX1fiD_hpLB3RqUwzjNRrcLs2gF_Vs0_WtY66VrD3VsTTUwcjKZy9BlDYwMLP68YuBp-G0A2WGxiHndV7VmNumDI5QRQmE4DlKqoeLfG0w';
+// const token = 'AQXwqFy0cEEA9Di606cATO0NJ56KzGr75cZi-lfwLiL7rRYCqDitp-P2js3nX_tiWXY5vd2Yr8qJrYp1jQCwOa-j0hws_RGY7M5jyANYtR0IxrrGZlz8QhrZFi7PnQLr7qRgwiTru7Utz_jNNsDfaYzNW32lcbxskoGUKG6QeLclt8chdbiCuQAYYwFvgokm8Wx3-UhurZjgQrfHdIghBpQogNG650qG5r7WqQ-ROstfqOZYwVBxOX1fiD_hpLB3RqUwzjNRrcLs2gF_Vs0_WtY66VrD3VsTTUwcjKZy9BlDYwMLP68YuBp-G0A2WGxiHndV7VmNumDI5QRQmE4DlKqoeLfG0w';
 // rf AQUcMDVwnfzMXs6_oRe67OxcrOhYrMrVco2vHh7mybvvWbxJ8LbWdN9evnnm0a5_DLlimngrbLWXjGoxlSPlx0AXsNhPbmMEztKUtgiBK3hp8qGNkZYeyY7ZlV0ljOmHZNxr-r8BIkOg5ARvmuUsUerWMkMzEFSTWtmvQnKf4f6YCn7vD7A1QmkXHr5ZjsvS7sCybreVSNAwBiCHC2BfZnCPWraIANlFqrFiNpnE5gKY7g73M-0CD9PMLLo5RR4SeBrgbeyb8OwjUESB7pMmlgNxrpOdzFG9K4dtWs_fGg46pZoAx_XSkPKwhYBjHWp4DG6Fy-5Grq0ccUR1YAf8Yyf0zkrhFw
 
 // Initialize Express app
-const app = express(); 
-app.use(express.json());
 
 
 
@@ -199,27 +352,27 @@ app.get('/hello', async (req, res) => {
   res.send(items);
 });
 
-async function authenticateToken(req, res, next) {
-  const token = req.headers['authorization'] && req.headers['authorization'].split(' ')[1];
+// async function authenticateToken(req, res, next) {
+//   const token = req.headers['authorization'] && req.headers['authorization'].split(' ')[1];
 
-  if (!token) return res.status(401).json({ message: 'Access Denied' });
+//   if (!token) return res.status(401).json({ message: 'Access Denied' });
 
-  try {
-    const verified = jwt.verify(token, SECRET_KEY);
-    req.user = verified;
+//   try {
+//     const verified = jwt.verify(token, LINKEDIN_CLIENT_SECRET);
+//     req.user = verified;
 
-    await client.connect();
-    const db = client.db('black-licorice');
-    const user = await db.collection('users').findOne({ email: verified.email });
+//     await client.connect();
+//     const db = client.db('black-licorice');
+//     const user = await db.collection('users').findOne({ email: verified.email });
 
-    if (!user) return res.status(404).json({ message: 'User not found' });
+//     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    req.userAdAccountID = user.accountId;
-    next();
-  } catch (error) {
-    res.status(400).json({ message: 'Invalid Token' });
-  }
-}
+//     req.userAdAccountID = user.accountId;
+//     next();
+//   } catch (error) {
+//     res.status(400).json({ message: 'Invalid Token' });
+//   }
+// }
 
 // Save budget endpoint
 app.post('/save-budget', authenticateToken, async (req, res) => {
@@ -286,6 +439,7 @@ app.post('/update-account-id', authenticateToken, async (req, res) => {
 
 // API route to fetch the logged-in user's profile
 app.get('/user-profile', authenticateToken, async (req, res) => {
+  console.log("🚀 ~ file: server.js ~ line 268 ~ app.get ~ req.user", req.user)
   try {
     const db = client.db('black-licorice');
     const usersCollection = db.collection('users');
@@ -335,7 +489,14 @@ app.post('/signup', async (req, res) => {
     };
 
     await usersCollection.insertOne(newUser);
-    const token = jwt.sign({ email: newUser.email, userId: newUser.userId }, SECRET_KEY, { expiresIn: '1h' });
+    const token = jwt.sign(
+      { 
+        linkedinId: newUser.linkedinId,  // Assuming you're using linkedinId for identification
+        userId: newUser.userId 
+      }, 
+      process.env.LINKEDIN_CLIENT_SECRET,  // This should pull the key from your .env file
+      { expiresIn: '1h' }
+    );
     
     res.status(201).json({ token });
   } catch (error) {
@@ -352,25 +513,34 @@ app.get('/test', (req, res) => {
 
 // User login route
 app.post('/login', async (req, res) => {
-  const { email, password } = req.body;
+  const { linkedinId, password } = req.body;  // No email, just linkedinId and password for login
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
     const usersCollection = db.collection('users');
 
-    const user = await usersCollection.findOne({ email });
+    const user = await usersCollection.findOne({ linkedinId });
     if (!user) {
-      return res.status(400).json({ message: 'Invalid email or password' });
+      return res.status(400).json({ message: 'Invalid LinkedIn ID or password' });
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      return res.status(400).json({ message: 'Invalid email or password' });
+      return res.status(400).json({ message: 'Invalid LinkedIn ID or password' });
     }
 
-    const token = jwt.sign({ email: user.email, userId: user.userId }, SECRET_KEY, { expiresIn: '1h' });
+    // Generate the JWT token with linkedinId and userId (no email)
+    const token = jwt.sign(
+      {
+        linkedinId: user.linkedinId,
+        userId: user.userId,  // Include userId in the token
+      },
+      process.env.LINKEDIN_CLIENT_SECRET,
+      { expiresIn: '1h' }
+    );
 
+    // Send the token to the client
     res.json({ token });
   } catch (error) {
     console.error('Error logging in:', error);
@@ -438,7 +608,7 @@ app.get('/user-campaign-groups', authenticateToken, async (req, res) => {
     const user = await db.collection('users').findOne({ userId });
 
     if (user) {
-      res.status(200).json({ groups: user.campaignGroups || [] });
+      res.status().json({ groups: user.campaignGroups || [] });
     } else {
       res.status(404).json({ message: 'User not found' });
     }
@@ -731,19 +901,51 @@ app.get('/linkedin', authenticateToken, async (req, res) => {
 });
 
 app.get('/ad-account-name', authenticateToken, async (req, res) => {
-  const userAdAccountID = req.userAdAccountID;
-  const url = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}`;
-
+  console.log("🚀 ~ file: server.js ~ line 268 ~ app.get ~ req.user", req.user)
   try {
+    // Get the user's LinkedIn ID from the authenticated user
+    const linkedinId = req.user.linkedinId;
+
+    if (!linkedinId) {
+      return res.status(400).json({ message: 'LinkedIn ID not found in user data' });
+    }
+
+    // Connect to the database and fetch the user's ad accounts and access token using linkedinId
+    await client.connect();
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+    
+    // Find the user by LinkedIn ID
+    const user = await usersCollection.findOne({ linkedinId });
+    console.log("🐒 ~ user:", user);
+
+    if (!user || !user.adAccounts || user.adAccounts.length === 0) {
+      return res.status(404).json({ message: 'No ad accounts found for user' });
+    }
+
+    // Extract the first ad account's ID from the user's saved ad accounts
+    const adAccountUrn = user.adAccounts[0].accountId;
+    const userAdAccountID = adAccountUrn.split(':').pop(); // Extract the numeric ID part
+
+    console.log("🐒 ~ userAdAccountID:", userAdAccountID); // Log extracted account ID
+
+    // Ensure we are using the user's access token
+    const token = user.accessToken;
+
+    // Send the request to LinkedIn API to fetch the ad account name
+    const url = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}`;
     const response = await axios.get(url, {
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,  // Use the user's access token
         'X-RestLi-Protocol-Version': '2.0.0',
         'LinkedIn-Version': '202406',
       },
     });
+
+    // Extract the ad account name from the response
     const adAccountName = response.data.name;
     res.json({ name: adAccountName });
+
   } catch (error) {
     console.error('Error fetching ad account name from LinkedIn API:', error);
     res.status(error.response ? error.response.status : 500).send(error.message);
@@ -752,18 +954,17 @@ app.get('/ad-account-name', authenticateToken, async (req, res) => {
 
 app.get('/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
   const userAdAccountID = req.userAdAccountID;
-
   const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
 
   try {
     const response = await axios.get(apiUrl, {
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${req.token}`,
         'X-RestLi-Protocol-Version': '2.0.0',
         'LinkedIn-Version': '202406',
       },
     });
-    res.json(response.data); // Make sure to return the data as JSON
+    res.json(response.data);
   } catch (error) {
     console.error('Error fetching data from LinkedIn API:', error);
     res.status(error.response ? error.response.status : 500).send(error.message);
