@@ -44,11 +44,12 @@ passport.use(new LinkedInStrategy({
   clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
   callbackURL: "http://localhost:8000/auth/linkedin/callback",
   scope: ['r_ads_reporting',
-          'w_member_social',
           'r_ads',
           'rw_ads',
           'r_basicprofile'],
 }, (accessToken, refreshToken, profile, done) => {
+  console.log("Access Token:", accessToken);
+console.log("Profile Data:", profile);
   // Pass both the profile and accessToken to be used in the callback
   return done(null, { profile, accessToken });
 }));
