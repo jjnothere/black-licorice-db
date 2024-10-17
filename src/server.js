@@ -49,16 +49,12 @@ passport.use(new LinkedInStrategy({
   callbackURL: "http://localhost:8000/auth/linkedin/callback",
   scope: ['r_ads_reporting', 'r_ads', 'rw_ads', 'r_basicprofile'],
 }, (accessToken, refreshToken, profile, done) => {
-  console.log('LinkedIn Strategy callback invoked');
-  console.log('Access Token:', accessToken);
-  console.log('Profile Data:', profile);
   // Pass both the profile and accessToken to be used in the callback
   return done(null, { profile, accessToken });
 }));
 
 // LinkedIn authentication route
 app.get('/auth/linkedin', (req, res, next) => {
-  console.log('LinkedIn authentication route accessed');
   next();
 }, passport.authenticate('linkedin'));
 
@@ -226,7 +222,6 @@ if (process.env.NODE_ENV !== 'production') {
 }
 // Schedule the checkForChanges function to run every day at 2:15 PM
 cron.schedule('0 23 * * *', async () => {
-  console.log('Running checkForChanges task at 2:15 PM');
   try {
     await checkForChangesForAllUsers();
   } catch (error) {
@@ -243,7 +238,6 @@ async function checkForChangesForAllUsers() {
     const users = await usersCollection.find({}).toArray();
 
     for (const user of users) {
-      console.log(`Checking changes for user: ${user.email}`);
       await checkForChanges(user.userId, user.accountId, db);
     }
   } catch (error) {
@@ -257,8 +251,6 @@ async function checkForChanges(userId, userAdAccountID, db) {
     const currentCampaigns = await fetchCurrentCampaigns(db, userId);
     const linkedInCampaigns = await fetchLinkedInCampaigns(userAdAccountID);
 
-    console.log(`User ${userId} - Current campaigns: ${currentCampaigns.length}`);
-    console.log(`User ${userId} - LinkedIn campaigns: ${linkedInCampaigns.length}`);
 
     const newDifferences = [];
 
@@ -299,7 +291,6 @@ async function checkForChanges(userId, userAdAccountID, db) {
       )
     );
 
-    console.log(`User ${userId} - Unique differences: ${uniqueDifferences.length}`);
 
     await saveCampaigns(db, linkedInCampaigns, userId);
     await saveChanges(db, uniqueDifferences, userId);
@@ -480,22 +471,26 @@ app.post('/update-account-id', authenticateToken, async (req, res) => {
 
 // API route to fetch the logged-in user's profile
 app.get('/user-profile', authenticateToken, async (req, res) => {
-  console.log("🚀 ~ file: server.js ~ line 268 ~ app.get ~ req.user", req.user)
   try {
-    const db = client.db('black-licorice');
-    const usersCollection = db.collection('users');
+    const user = await client.db('black-licorice').collection('users').findOne(
+      { linkedinId: req.user.linkedinId }, 
+      { projection: { email: 1, firstName: 1, lastName: 1, adAccounts: 1 } }
+    );
     
-    const email = req.user.email;
-    
-    const user = await usersCollection.findOne({ email }, { projection: { _id: 0, email: 1, accountId: 1 } });
-    
-    if (user) {
-      res.status(200).json(user);
-    } else {
-      res.status(404).json({ message: 'User not found' });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
     }
+
+    res.json({
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      adAccounts: user.adAccounts.map(acc => ({
+        id: acc.accountId,
+        name: acc.name // Assuming the name of the ad account is fetched
+      }))
+    });
   } catch (error) {
-    console.error('Error fetching user profile:', error);
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
@@ -941,7 +936,6 @@ app.get('/linkedin', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'LinkedIn Access Token not found' });
     }
 
-    console.log('Building LinkedIn API URL with Ad Account ID:', userAdAccountID);
 
     // LinkedIn API URL with dynamic userAdAccountID
     let url = `https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:${startDate.getFullYear()},month:${startDate.getMonth() + 1},day:${startDate.getDate()}),end:(year:${endDate.getFullYear()},month:${endDate.getMonth() + 1},day:${endDate.getDate()}))&timeGranularity=DAILY&pivot=CAMPAIGN&accounts=List(urn%3Ali%3AsponsoredAccount%3A${userAdAccountID})&fields=externalWebsiteConversions,dateRange,impressions,landingPageClicks,likes,shares,costInLocalCurrency,approximateUniqueImpressions,pivotValues`;
@@ -951,7 +945,6 @@ app.get('/linkedin', authenticateToken, async (req, res) => {
       url += `&campaigns=${campaigns}`;
     }
 
-    console.log('LinkedIn API URL:', url);
 
     // Make the request to LinkedIn API
     const response = await axios.get(url, {
@@ -962,7 +955,6 @@ app.get('/linkedin', authenticateToken, async (req, res) => {
       },
     });
 
-    console.log('LinkedIn API Response:', response.data);
 
     res.json(response.data); // Send back the API response
   } catch (error) {
@@ -971,36 +963,50 @@ app.get('/linkedin', authenticateToken, async (req, res) => {
     return res.status(error.response?.status || 500).send(error.message);
   }
 });
+
 app.get('/ad-account-name', authenticateToken, async (req, res) => {
   try {
-    // Fetch the user from the database using LinkedIn ID
     const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
 
     if (!user || !user.adAccounts || user.adAccounts.length === 0) {
       return res.status(404).json({ error: 'Ad accounts not found for this user' });
     }
 
-    const userAdAccountID = user.adAccounts[0].accountId.split(':').pop(); // Extract numeric account ID
     const token = user.accessToken;
 
-    // LinkedIn API endpoint for ad account name
-    const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}`;
+    const adAccountNames = await Promise.all(
+      user.adAccounts.map(async (account) => {
+        const userAdAccountID = account.accountId.split(':').pop(); // Extract numeric account ID
+        const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}`;
 
-    const response = await axios.get(apiUrl, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'X-RestLi-Protocol-Version': '2.0.0',
-        'LinkedIn-Version': '202406',
-      },
-    });
+        try {
+          const response = await axios.get(apiUrl, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'X-RestLi-Protocol-Version': '2.0.0',
+              'LinkedIn-Version': '202406',
+            },
+          });
+          return { id: account.accountId, name: response.data.name };
+        } catch (error) {
+          if (error.response && error.response.data && error.response.data.code === 'NOT_FOUND') {
+            return { id: account.accountId, name: 'Account has been removed or deactivated' };
+          } else {
+            console.error(`Error fetching name for account ${account.accountId}:`, error);
+            return { id: account.accountId, name: 'Unknown' }; // Return 'Unknown' in case of an error
+          }
+        }
+      })
+    );
 
-    res.json({ name: response.data.name });
+    // Respond with all processed ad accounts
+    console.log("🐒 ~ { adAccounts: adAccountNames }:", { adAccounts: adAccountNames })
+    res.json({ adAccounts: adAccountNames });
   } catch (error) {
-    console.error('Error fetching ad account name:', error);
-    res.status(error.response?.status || 500).send('Error fetching ad account name');
+    console.error('Error fetching ad account names:', error);
+    res.status(error.response?.status || 500).send('Error fetching ad account names');
   }
 });
-
 app.get('/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
   try {
     // Fetch the user from the database using LinkedIn ID
