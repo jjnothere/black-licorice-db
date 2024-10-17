@@ -19,9 +19,9 @@ const app = express();
 app.use(express.json());
 app.use(cors()); // Enable CORS
 
-// Configure session middleware
+// Configure session
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'someRandomSecretKey',
+  secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: true
 }));
@@ -38,45 +38,48 @@ passport.deserializeUser((obj, done) => {
   done(null, obj);
 });
 
+// MongoDB client setup
+const url = 'mongodb+srv://jjnothere:GREATpoop^6^@black-licorice-cluster.5hb9ank.mongodb.net/?retryWrites=true&w=majority&appName=black-licorice-cluster';
+const client = new MongoClient(url);
+
 // LinkedIn Strategy for OAuth 2.0
 passport.use(new LinkedInStrategy({
   clientID: process.env.LINKEDIN_CLIENT_ID,
   clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
   callbackURL: "http://localhost:8000/auth/linkedin/callback",
-  scope: ['r_ads_reporting',
-          'r_ads',
-          'rw_ads',
-          'r_basicprofile'],
+  scope: ['r_ads_reporting', 'r_ads', 'rw_ads', 'r_basicprofile'],
 }, (accessToken, refreshToken, profile, done) => {
-  console.log("Access Token:", accessToken);
-console.log("Profile Data:", profile);
+  console.log('LinkedIn Strategy callback invoked');
+  console.log('Access Token:', accessToken);
+  console.log('Profile Data:', profile);
   // Pass both the profile and accessToken to be used in the callback
   return done(null, { profile, accessToken });
 }));
 
 // LinkedIn authentication route
-app.get('/auth/linkedin', passport.authenticate('linkedin'));
+app.get('/auth/linkedin', (req, res, next) => {
+  console.log('LinkedIn authentication route accessed');
+  next();
+}, passport.authenticate('linkedin'));
 
-// LinkedIn callback route
-// LinkedIn callback route
 // LinkedIn callback route
 app.get('/auth/linkedin/callback',
   passport.authenticate('linkedin', { failureRedirect: '/' }),
   async (req, res) => {
-    const { accessToken, profile } = req.user;
-
-    // Check if the accessToken is available
-    if (!accessToken) {
-      console.error('Error: Access token not found');
-      return res.status(400).json({ error: 'Access token not found' });
-    }
-
-    // Extract necessary details from LinkedIn profile
-    const linkedinId = profile.id;  // Using linkedinId instead of email
-    const firstName = profile.name.givenName;
-    const lastName = profile.name.familyName;
-
     try {
+      const { accessToken, profile } = req.user;
+
+      // Check if the accessToken is available
+      if (!accessToken) {
+        console.error('Error: Access token not found');
+        return res.status(400).json({ error: 'Access token not found' });
+      }
+
+      // Extract necessary details from LinkedIn profile
+      const linkedinId = profile.id;  // Using linkedinId instead of email
+      const firstName = profile.name.givenName;
+      const lastName = profile.name.familyName;
+
       await client.connect();
       const db = client.db('black-licorice');
       const usersCollection = db.collection('users');
@@ -132,23 +135,27 @@ app.get('/auth/linkedin/callback',
       }
 
       // Generate a JWT token with linkedinId and userId (no email)
-      const token = jwt.sign(
-        {
-          linkedinId: user.linkedinId,
-          userId: user.userId,  // Include userId in the token
-        },
+      const jwtAccessToken = jwt.sign(
+        { linkedinId: user.linkedinId, userId: user.userId },
         process.env.LINKEDIN_CLIENT_SECRET,
         { expiresIn: '1h' }
       );
+      const refreshToken = jwt.sign(
+        { linkedinId: user.linkedinId, userId: user.userId },
+        process.env.REFRESH_TOKEN_SECRET,
+        { expiresIn: '7d' }
+      );
+      await usersCollection.updateOne({ linkedinId }, { $set: { refreshToken } });
 
-      // Redirect to the frontend with the access token in the query parameter
-      res.redirect(`http://localhost:5173/history?token=${token}`);
+      // Redirect to the frontend with the access token in the query
+      res.redirect(`http://localhost:5173/history?token=${jwtAccessToken}&refreshToken=${refreshToken}`);
     } catch (error) {
       console.error('Error fetching ad accounts or saving user to the database:', error);
       res.status(500).json({ message: 'Internal Server Error' });
     }
   }
 );
+
 // Token verification middleware
 const authenticateToken = (req, res, next) => {
   const token = req.headers['authorization']?.split(' ')[1]; // Extract Bearer token
@@ -163,12 +170,45 @@ const authenticateToken = (req, res, next) => {
   }
 };
 
+// Logout route
+app.post('/logout', authenticateToken, async (req, res) => {
+  try {
+    await client.connect();
+    const db = client.db('black-licorice');
+    const usersCollection = db.collection('users');
+
+    await usersCollection.updateOne({ linkedinId: req.user.linkedinId }, { $unset: { refreshToken: '' } });
+    res.status(200).json({ message: 'Logged out successfully' });
+  } catch (error) {
+    console.error('Error during logout:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+// Refresh token route
+app.post('/refresh-token', async (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(403).send('Refresh token required.');
+
+  try {
+    const decoded = jwt.verify(token, process.env.REFRESH_TOKEN_SECRET);
+    const newAccessToken = jwt.sign(
+      { linkedinId: decoded.linkedinId, userId: decoded.userId },
+      process.env.LINKEDIN_CLIENT_SECRET,
+      { expiresIn: '1h' }
+    );
+    res.json({ accessToken: newAccessToken });
+  } catch (error) {
+    console.error('Error refreshing token:', error);
+    res.status(403).json({ message: 'Invalid refresh token' });
+  }
+});
+
 // Test route
 app.get('/protected', authenticateToken, (req, res) => {
   res.json({ message: 'You have access to protected route' });
 });
-const url = 'mongodb+srv://jjnothere:GREATpoop^6^@black-licorice-cluster.5hb9ank.mongodb.net/?retryWrites=true&w=majority&appName=black-licorice-cluster';
-const client = new MongoClient(url);
+
 // const LINKEDIN_CLIENT_SECRET = '10e9b23966ddb67730a76de7cbaa4f58b06f18a8d11d181888d4ee5b3412d06b';
 
 // test
