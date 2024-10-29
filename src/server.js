@@ -59,6 +59,7 @@ app.get('/auth/linkedin', (req, res, next) => {
 }, passport.authenticate('linkedin'));
 
 // LinkedIn callback route
+// LinkedIn callback route
 app.get('/auth/linkedin/callback',
   passport.authenticate('linkedin', { failureRedirect: '/' }),
   async (req, res) => {
@@ -90,9 +91,11 @@ app.get('/auth/linkedin/callback',
         },
       });
 
+      // Map ad accounts to include the initialized campaigns array
       const adAccounts = adAccountsResponse.data.elements.map(account => ({
-        accountId: account.account,
+        accountId: account.account.split(':').pop(), // Extract only the accountId part
         role: account.role,
+        campaigns: [] // Initialize an empty array for campaigns
       }));
 
       // Check if user already exists in the database
@@ -110,7 +113,7 @@ app.get('/auth/linkedin/callback',
               firstName: firstName,
               lastName: lastName,
               lastLogin: new Date(),
-              adAccounts: adAccounts, // Save ad account info
+              adAccounts: adAccounts, // Save ad account info with initialized campaigns
             },
           }
         );
@@ -124,7 +127,7 @@ app.get('/auth/linkedin/callback',
           lastName: lastName,
           userId: uuidv4(),  // Generate a unique userId
           createdAt: new Date(),
-          adAccounts: adAccounts, // Save ad account info
+          adAccounts: adAccounts, // Save ad account info with initialized campaigns
         };
         await usersCollection.insertOne(newUser);
         user = newUser;
@@ -134,7 +137,7 @@ app.get('/auth/linkedin/callback',
       const jwtAccessToken = jwt.sign(
         { linkedinId: user.linkedinId, userId: user.userId },
         process.env.LINKEDIN_CLIENT_SECRET,
-        { expiresIn: '1h' }
+        { expiresIn: '2h' }
       );
       const refreshToken = jwt.sign(
         { linkedinId: user.linkedinId, userId: user.userId },
@@ -151,6 +154,7 @@ app.get('/auth/linkedin/callback',
     }
   }
 );
+
 
 // Token verification middleware
 const authenticateToken = (req, res, next) => {
@@ -248,9 +252,8 @@ async function checkForChangesForAllUsers() {
 async function checkForChanges(userId, userAdAccountID, db) {
   try {
     const differences = [];
-    const currentCampaigns = await fetchCurrentCampaigns(db, userId);
-    const linkedInCampaigns = await fetchLinkedInCampaigns(userAdAccountID);
-
+    const currentCampaigns = await fetchCurrentCampaigns(db, userId, userAdAccountID); // Fetch campaigns for the specific ad account
+    const linkedInCampaigns = await fetchLinkedInCampaigns(userAdAccountID); // Fetch campaigns from LinkedIn API
 
     const newDifferences = [];
 
@@ -291,17 +294,17 @@ async function checkForChanges(userId, userAdAccountID, db) {
       )
     );
 
-
-    await saveCampaigns(db, linkedInCampaigns, userId);
-    await saveChanges(db, uniqueDifferences, userId);
+    await saveCampaigns(db, linkedInCampaigns, userId, props.selectedAdAccountId);
+    // After finding differences between LinkedIn and stored campaigns
+    await saveChanges(db, uniqueDifferences, userId, selectedAdAccountId); // Calls saveChanges
   } catch (error) {
-    console.error(`Error in checkForChanges for user ${userId}:`, error);
+    console.error(`Error in checkForChanges for user ${userId} and ad account ${userAdAccountID}:`, error);
   }
 }
 
-async function fetchCurrentCampaigns(db, userId) {
-  const userCampaigns = await db.collection('campaigns').findOne({ userId: userId });
-  return userCampaigns?.elements || [];
+async function fetchCurrentCampaigns(db, userId, accountId) {
+  const userCampaigns = await db.collection('adCampaigns').findOne({ userId: userId });
+  return userCampaigns?.adCampaigns?.[accountId]?.campaigns || [];
 }
 
 async function fetchLinkedInCampaigns(userAdAccountID) {
@@ -339,22 +342,26 @@ const findDifferences = (obj1, obj2, prefix = '') => {
   return diffs;
 };
 
-async function saveChanges(db, changes, userId) {
-  const collection = db.collection('changes');
-  const changesWithIds = changes.map(change => {
-    if (!change._id) {
-      change._id = new ObjectId();
-    } else {
-      change._id = new ObjectId(change._id); // Ensure _id is of type ObjectId
-    }
-    return change;
-  });
 
-  const existingUserChanges = await collection.findOne({ userId: userId });
+async function saveChanges(db, changes, userId, adAccountId) {
+  if (!adAccountId) {
+    console.error("Error: adAccountId is undefined.");
+    return; // Exit if adAccountId is not provided
+  }
+
+  const collection = db.collection('changes');
+  const changesWithIds = changes.map(change => ({
+    ...change,
+    _id: change._id ? new ObjectId(change._id) : new ObjectId()
+  }));
+
+  const existingUserChanges = await collection.findOne({ userId });
 
   if (existingUserChanges) {
+    const existingAdAccountChanges = existingUserChanges.changes[adAccountId] || [];
+
     const uniqueChanges = changesWithIds.filter(newChange =>
-      !existingUserChanges.changes.some(existingChange =>
+      !existingAdAccountChanges.some(existingChange =>
         existingChange._id.equals(newChange._id) ||
         (existingChange.campaign === newChange.campaign &&
           existingChange.date === newChange.date &&
@@ -363,14 +370,39 @@ async function saveChanges(db, changes, userId) {
     );
 
     if (uniqueChanges.length > 0) {
-      await collection.updateOne({ userId: userId }, { $push: { changes: { $each: uniqueChanges } } });
+      await collection.updateOne(
+        { userId },
+        { $push: { [`changes.${adAccountId}`]: { $each: uniqueChanges } } }
+      );
     }
   } else {
-    await collection.insertOne({ userId: userId, changes: changesWithIds });
+    await collection.insertOne({
+      userId,
+      changes: { [adAccountId]: changesWithIds }
+    });
   }
 }
 
+// Route to get the user's ad accounts
+app.get('/get-user-ad-accounts', authenticateToken, async (req, res) => {
+  try {
+    // Fetch the user based on the authenticated LinkedIn ID
+    const user = await client.db('black-licorice')
+      .collection('users')
+      .findOne({ linkedinId: req.user.linkedinId });
 
+    if (!user || !user.adAccounts) {
+      // If the user or ad accounts are not found, return a 404 error
+      return res.status(404).json({ error: 'User or ad accounts not found' });
+    }
+
+    // Return the ad accounts to the client
+    res.json({ adAccounts: user.adAccounts });
+  } catch (error) {
+    console.error('Error fetching user ad accounts:', error);
+    res.status(500).send('Error fetching user ad accounts');
+  }
+});
 
 // Serve static files from the Vue app's build directory
 const __filename = fileURLToPath(import.meta.url);
@@ -408,17 +440,19 @@ app.get('/hello', async (req, res) => {
 
 // Save budget endpoint
 app.post('/save-budget', authenticateToken, async (req, res) => {
-  const { budget } = req.body;
+  const { accountId, budget } = req.body; // Include accountId in the request body
   const userId = req.user.userId;
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const usersCollection = db.collection('users');
+    const adCampaignsCollection = db.collection('adCampaigns');
 
-    await usersCollection.updateOne(
+    // Update the budget for the specific ad account
+    await adCampaignsCollection.updateOne(
       { userId: userId },
-      { $set: { budget: budget } }
+      { $set: { [`adCampaigns.${accountId}.budget`]: budget } }, // Save the budget under the specified accountId
+      { upsert: true }
     );
 
     res.status(200).json({ message: 'Budget saved successfully' });
@@ -427,22 +461,30 @@ app.post('/save-budget', authenticateToken, async (req, res) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
-
 // Fetch budget endpoint
 app.get('/get-budget', authenticateToken, async (req, res) => {
+  const { accountId } = req.query;
   const userId = req.user.userId;
+
+  if (!accountId) {
+    return res.status(400).json({ message: 'Account ID is required' });
+  }
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const usersCollection = db.collection('users');
+    const adCampaignsCollection = db.collection('adCampaigns');
 
-    const user = await usersCollection.findOne({ userId: userId });
+    // Retrieve the ad campaigns document for the user
+    const adCampaignsDoc = await adCampaignsCollection.findOne({ userId });
 
-    if (user) {
-      res.status(200).json({ budget: user.budget || 0 });
+    // Check if the ad account exists and has a budget
+    const budget = adCampaignsDoc?.adCampaigns?.[accountId]?.budget || null;
+
+    if (budget !== null) {
+      res.status(200).json({ budget });
     } else {
-      res.status(404).json({ message: 'User not found' });
+      res.status(404).json({ message: 'Ad account or budget not found' });
     }
   } catch (error) {
     console.error('Error fetching budget:', error);
@@ -585,26 +627,33 @@ app.post('/login', async (req, res) => {
 });
 
 // Backend route to update a campaign group
+// Update an existing campaign group
+// Backend route to update a campaign group
 app.post('/update-campaign-group', authenticateToken, async (req, res) => {
-  const { group } = req.body;
+  const { group, accountId } = req.body;
   const userId = req.user.userId;
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const usersCollection = db.collection('users');
+    const adCampaignsCollection = db.collection('adCampaigns');
 
-    // Update the user's campaign group in the campaignGroups array
-    await usersCollection.updateOne(
-      { userId: userId, 'campaignGroups.id': group.id },
+    // Use the $set operator to update the fields of the matching group
+    const updateResult = await adCampaignsCollection.updateOne(
+      { userId, [`adCampaigns.${accountId}.campaignGroups.id`]: group.id },
       {
         $set: {
-          'campaignGroups.$.name': group.name,
-          'campaignGroups.$.budget': group.budget !== null ? group.budget : null, // Ensure budget is not set to null incorrectly
-          'campaignGroups.$.campaignIds': group.campaignIds,
+          [`adCampaigns.${accountId}.campaignGroups.$[elem].name`]: group.name,
+          [`adCampaigns.${accountId}.campaignGroups.$[elem].budget`]: group.budget !== null ? group.budget : null,
+          [`adCampaigns.${accountId}.campaignGroups.$[elem].campaignIds`]: group.campaignIds,
         },
-      }
+      },
+      { arrayFilters: [{ "elem.id": group.id }] }
     );
+
+    if (updateResult.modifiedCount === 0) {
+      return res.status(404).json({ message: 'Campaign group not found or no changes made' });
+    }
 
     res.status(200).json({ message: 'Campaign group updated successfully' });
   } catch (error) {
@@ -613,20 +662,26 @@ app.post('/update-campaign-group', authenticateToken, async (req, res) => {
   }
 });
 // Backend route to delete a campaign group
+// Delete a campaign group from the specified ad account
+// Backend route to delete a campaign group
 app.post('/delete-campaign-group', authenticateToken, async (req, res) => {
-  const { groupId } = req.body;
+  const { groupId, accountId } = req.body;
   const userId = req.user.userId;
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const usersCollection = db.collection('users');
+    const adCampaignsCollection = db.collection('adCampaigns');
 
-    // Remove the group from the user's campaignGroups array
-    await usersCollection.updateOne(
-      { userId: userId },
-      { $pull: { campaignGroups: { id: groupId } } }
+    // Use $pull to remove the group from the specified ad account
+    const deleteResult = await adCampaignsCollection.updateOne(
+      { userId, [`adCampaigns.${accountId}.campaignGroups.id`]: groupId },
+      { $pull: { [`adCampaigns.${accountId}.campaignGroups`]: { id: groupId } } }
     );
+
+    if (deleteResult.modifiedCount === 0) {
+      return res.status(404).json({ message: 'Campaign group not found or could not be deleted' });
+    }
 
     res.status(200).json({ message: 'Campaign group deleted successfully' });
   } catch (error) {
@@ -635,19 +690,22 @@ app.post('/delete-campaign-group', authenticateToken, async (req, res) => {
   }
 });
 
+// Fetch campaign groups for a specific ad account
 app.get('/user-campaign-groups', authenticateToken, async (req, res) => {
-  const linkedinId = req.user.linkedinId; // Use linkedinId from the token
+  const { accountId } = req.query;
+  const userId = req.user.userId;
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const user = await db.collection('users').findOne({ linkedinId }); // Find user by linkedinId
+    const adCampaignsDoc = await db.collection('adCampaigns').findOne({ userId });
 
-    if (user) {
-      res.status(200).json({ groups: user.campaignGroups || [] });
-    } else {
-      res.status(404).json({ message: 'User not found' });
+    if (!adCampaignsDoc || !adCampaignsDoc.adCampaigns[accountId]) {
+      return res.status(404).json({ error: 'Ad account not found' });
     }
+
+    const campaignGroups = adCampaignsDoc.adCampaigns[accountId].campaignGroups || [];
+    res.status(200).json({ groups: campaignGroups });
   } catch (error) {
     console.error('Error fetching campaign groups:', error);
     res.status(500).json({ message: 'Internal Server Error' });
@@ -655,20 +713,35 @@ app.get('/user-campaign-groups', authenticateToken, async (req, res) => {
 });
 
 // Endpoint to save campaign groups to user doc
+// Endpoint to save campaign groups to user doc
+// Revised save-campaign-groups endpoint
 app.post('/save-campaign-groups', authenticateToken, async (req, res) => {
-  const { group } = req.body; // Contains group details (name, campaignIds)
+  const { group, accountId } = req.body;
   const userId = req.user.userId;
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const usersCollection = db.collection('users');
+    const adCampaignsCollection = db.collection('adCampaigns');
 
-    // Update the user's campaignGroups field by adding the new group
-    await usersCollection.updateOne(
-      { userId: userId },
-      { $push: { campaignGroups: group } }
-    );
+    // Check if the user document and account structure already exist
+    const adAccountPath = `adCampaigns.${accountId}.campaignGroups`;
+    const existingDoc = await adCampaignsCollection.findOne({ userId, [`adCampaigns.${accountId}`]: { $exists: true } });
+
+    if (!existingDoc) {
+      // Create new document or account structure if it doesn't exist
+      await adCampaignsCollection.updateOne(
+        { userId },
+        { $set: { [`adCampaigns.${accountId}.campaignGroups`]: [group] } },
+        { upsert: true }
+      );
+    } else {
+      // Add the group to the existing array using $addToSet to avoid duplicates
+      await adCampaignsCollection.updateOne(
+        { userId },
+        { $addToSet: { [adAccountPath]: group } }
+      );
+    }
 
     res.status(200).json({ message: 'Campaign group saved successfully' });
   } catch (error) {
@@ -680,15 +753,23 @@ app.post('/save-campaign-groups', authenticateToken, async (req, res) => {
 // Get campaigns for the logged-in user
 app.get('/get-current-campaigns', authenticateToken, async (req, res) => {
   const userId = req.user.userId;
+  const { accountId } = req.query;
+
+  if (!accountId) {
+    return res.status(400).json({ message: 'Account ID is required' });
+  }
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const userCampaigns = await db.collection('campaigns').findOne({ userId });
+    const adCampaignsDoc = await db.collection('adCampaigns').findOne({ userId });
 
-    res.json(userCampaigns || { elements: [] });
+    // Check if the ad account exists and has campaigns
+    const campaigns = adCampaignsDoc?.adCampaigns[accountId].campaigns || [];
+
+    res.json({ campaigns });
   } catch (error) {
-    console.error('Error fetching current campaigns from database:', error);
+    console.error('Error fetching campaigns:', error);
     res.status(500).send('Internal Server Error');
   }
 });
@@ -725,50 +806,44 @@ app.get('/get-current-campaigns', authenticateToken, async (req, res) => {
 // });
 
 app.post('/save-changes', authenticateToken, async (req, res) => {
-  const { changes } = req.body;
+  const { changes, adAccountId } = req.body; 
   const userId = req.user.userId;
 
   try {
-    await client.connect();
     const db = client.db('black-licorice');
     const changesCollection = db.collection('changes');
 
-    // Add an _id to each change if it doesn't have one
-    const changesWithIds = changes.map(change => {
-      if (!change._id) {
-        change._id = new ObjectId();
-      } else {
-        change._id = new ObjectId(change._id); // Ensure _id is of type ObjectId
-      }
-      return change;
-    });
-
+    // Find or insert the user’s document and update changes
     const existingUserChanges = await changesCollection.findOne({ userId });
-
+    const changesWithIds = changes.map(change => ({
+      ...change,
+      _id: change._id ? new ObjectId(change._id) : new ObjectId()
+    }));
+    
     if (existingUserChanges) {
-      // Only add unique changes
-      const uniqueChanges = changesWithIds.filter(newChange => 
-        !existingUserChanges.changes.some(existingChange => 
-          existingChange._id.equals(newChange._id) || 
-          (existingChange.campaign === newChange.campaign && 
-          existingChange.date === newChange.date && 
-          existingChange.changes === newChange.changes)
+      const existingAdAccountChanges = existingUserChanges.changes[adAccountId] || [];
+      const uniqueChanges = changesWithIds.filter(newChange =>
+        !existingAdAccountChanges.some(existingChange =>
+          existingChange._id.equals(newChange._id) ||
+          (existingChange.campaign === newChange.campaign &&
+           existingChange.date === newChange.date &&
+           existingChange.changes === newChange.changes)
         )
       );
 
       if (uniqueChanges.length > 0) {
         await changesCollection.updateOne(
           { userId },
-          { $push: { changes: { $each: uniqueChanges } } }
+          { $push: { [`changes.${adAccountId}`]: { $each: uniqueChanges } } }
         );
       }
     } else {
       await changesCollection.insertOne({
         userId,
-        changes: changesWithIds,
+        changes: { [adAccountId]: changesWithIds }
       });
     }
-    res.send('Changes saved successfully');
+    res.status(200).send('Changes saved successfully');
   } catch (error) {
     console.error('Error saving changes to MongoDB:', error);
     res.status(500).send('Internal Server Error');
@@ -777,100 +852,119 @@ app.post('/save-changes', authenticateToken, async (req, res) => {
 
 // Add Note Endpoint
 app.post('/add-note', authenticateToken, async (req, res) => {
-  const { changeId, newNote } = req.body;
-  const note = { _id: new ObjectId(), note: newNote, timestamp: new Date().toISOString() };
+  const { accountId, campaignId, newNote } = req.body;
+  const userId = req.user.userId;
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const result = await db.collection('changes').updateOne(
-      { "changes._id": new ObjectId(changeId) },
-      { $push: { 'changes.$.notes': note } }
+
+    const note = { _id: new ObjectId(), note: newNote, timestamp: new Date().toISOString() };
+
+    const result = await db.collection('adCampaigns').updateOne(
+      { userId, [`adAccounts.${accountId}.campaigns._id`]: campaignId },
+      { $push: { [`adAccounts.${accountId}.campaigns.$.notes`]: note } }
     );
 
     if (result.matchedCount === 0) {
-      res.status(404).send('Document not found');
-    } else {
-      res.send('Note added successfully');
+      return res.status(404).send('Campaign not found');
     }
+
+    res.send('Note added successfully');
   } catch (error) {
-    console.error('Error adding note to MongoDB:', error);
+    console.error('Error adding note:', error);
     res.status(500).send('Internal Server Error');
   }
 });
 
 // Edit Note Endpoint
 app.post('/edit-note', authenticateToken, async (req, res) => {
-  const { changeId, noteId, updatedNote } = req.body;
+  const { accountId, campaignId, noteId, updatedNote } = req.body;
+  const userId = req.user.userId;
 
+  if (!accountId || !campaignId || !noteId || !updatedNote) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
 
-    const result = await db.collection('changes').updateOne(
-      { "changes._id": new ObjectId(changeId), "changes.notes._id": new ObjectId(noteId) },
+    const result = await db.collection('adCampaigns').updateOne(
+      { userId, [`adAccounts.${accountId}.campaigns._id`]: campaignId },
       { 
         $set: { 
-          "changes.$[changeElem].notes.$[noteElem].note": updatedNote,
-          "changes.$[changeElem].notes.$[noteElem].timestamp": new Date().toISOString()
+          [`adAccounts.${accountId}.campaigns.$[campaignElem].notes.$[noteElem].note`]: updatedNote,
+          [`adAccounts.${accountId}.campaigns.$[campaignElem].notes.$[noteElem].timestamp`]: new Date().toISOString()
         } 
       },
       {
         arrayFilters: [
-          { "changeElem._id": new ObjectId(changeId) },
+          { "campaignElem._id": campaignId },
           { "noteElem._id": new ObjectId(noteId) }
         ]
       }
     );
 
-    if (result.matchedCount === 0) {
-      res.status(404).send('Document not found');
-    } else {
-      res.send('Note updated successfully');
+    if (result.modifiedCount === 0) {
+      return res.status(404).send('Note not found');
     }
+
+    res.send('Note updated successfully');
   } catch (error) {
-    console.error('Error updating note in MongoDB:', error);
+    console.error('Error updating note:', error);
     res.status(500).send('Internal Server Error');
   }
 });
 
 // Delete Note Endpoint
 app.post('/delete-note', authenticateToken, async (req, res) => {
-  const { changeId, noteId } = req.body;
+  const { accountId, campaignId, noteId } = req.body;
+  const userId = req.user.userId;
+
+  if (!accountId || !campaignId || !noteId) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
 
-    const result = await db.collection('changes').updateOne(
-      { "changes._id": new ObjectId(changeId) },
-      { $pull: { "changes.$.notes": { _id: new ObjectId(noteId) } } }
+    const result = await db.collection('adCampaigns').updateOne(
+      { userId, [`adAccounts.${accountId}.campaigns._id`]: campaignId },
+      { $pull: { [`adAccounts.${accountId}.campaigns.$[campaignElem].notes`]: { _id: new ObjectId(noteId) } } },
+      {
+        arrayFilters: [
+          { "campaignElem._id": campaignId }
+        ]
+      }
     );
 
-    if (result.matchedCount === 0) {
-      res.status(404).send('Document not found');
-    } else {
-      res.send('Note deleted successfully');
+    if (result.modifiedCount === 0) {
+      return res.status(404).send('Note not found');
     }
+
+    res.send('Note deleted successfully');
   } catch (error) {
-    console.error('Error deleting note from MongoDB:', error);
+    console.error('Error deleting note:', error);
     res.status(500).send('Internal Server Error');
   }
 });
 
 app.get('/get-all-changes', authenticateToken, async (req, res) => {
   const userId = req.user.userId;
+  const { adAccountId } = req.query;
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
     const userChanges = await db.collection('changes').findOne({ userId });
+    console.log("🐒 ~ userChanges:", userChanges)
 
-    if (userChanges) {
-      res.json(userChanges.changes);
+    if (userChanges && userChanges.changes[adAccountId]) {
+      res.json(userChanges.changes[adAccountId]);
     } else {
-      res.json([]); // Return an empty array if no changes are found
+      res.json([]); // Return an empty array if no changes are found for the ad account
     }
   } catch (error) {
     console.error('Error fetching changes from MongoDB:', error);
@@ -879,32 +973,29 @@ app.get('/get-all-changes', authenticateToken, async (req, res) => {
 });
 
 app.post('/save-campaigns', authenticateToken, async (req, res) => {
-  const { campaigns } = req.body;
+  const { campaigns, accountId } = req.body;
   const userId = req.user.userId;
+
+  if (!accountId) {
+    return res.status(400).json({ message: 'Account ID is required' });
+  }
 
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const collection = db.collection('campaigns');
+    const adCampaignsCollection = db.collection('adCampaigns');
 
-    // Check if a document for the user already exists
-    const existingDoc = await collection.findOne({ userId });
+    // Update the campaigns for the specified ad account inside adCampaigns, not adAccounts
+    await adCampaignsCollection.updateOne(
+      { userId },
+      { $set: { [`adCampaigns.${accountId}.campaigns`]: campaigns } },
+      { upsert: true }
+    );
 
-    if (existingDoc) {
-      // Update the existing document
-      await collection.updateOne(
-        { userId },
-        { $set: { elements: campaigns } }
-      );
-      res.send('Campaigns updated successfully');
-    } else {
-      // Insert a new document
-      await collection.insertOne({ userId, elements: campaigns });
-      res.send('Campaigns saved successfully');
-    }
+    res.status(200).json({ message: 'Campaigns saved successfully' });
   } catch (error) {
-    console.error('Error saving campaigns to MongoDB:', error);
-    res.status(500).send('Internal Server Error');
+    console.error('Error saving campaigns:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
   }
 });
 
@@ -976,7 +1067,7 @@ app.get('/ad-account-name', authenticateToken, async (req, res) => {
 
     const adAccountNames = await Promise.all(
       user.adAccounts.map(async (account) => {
-        const userAdAccountID = account.accountId.split(':').pop(); // Extract numeric account ID
+        const userAdAccountID = account.accountId.split(':').pop();
         const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}`;
 
         try {
@@ -987,66 +1078,155 @@ app.get('/ad-account-name', authenticateToken, async (req, res) => {
               'LinkedIn-Version': '202406',
             },
           });
-          return { id: account.accountId, name: response.data.name };
-        } catch (error) {
-          if (error.response && error.response.data && error.response.data.code === 'NOT_FOUND') {
-            return { id: account.accountId, name: 'Account has been removed or deactivated' };
+
+          // Check if the response has the necessary data
+          if (response.data && response.data.name) {
+            return { id: account.accountId, name: response.data.name };
           } else {
-            console.error(`Error fetching name for account ${account.accountId}:`, error);
-            return { id: account.accountId, name: 'Unknown' }; // Return 'Unknown' in case of an error
+            console.warn(`No name found for account ${account.accountId}`);
+            return { id: account.accountId, name: 'Unknown' };
+          }
+        } catch (error) {
+          if (error.response && error.response.status === 404) {
+            // Skip this account if the API returns a 404 error
+            console.warn(`Skipping account ${account.accountId}: Not found (404)`);
+            return null; // Return null to indicate that this account should be skipped
+          } else {
+            console.error(`Error fetching name for account ${account.accountId}:`, error.message);
+            return { id: account.accountId, name: 'Unknown' };
           }
         }
       })
     );
 
-    // Respond with all processed ad accounts
-    console.log("🐒 ~ { adAccounts: adAccountNames }:", { adAccounts: adAccountNames })
-    res.json({ adAccounts: adAccountNames });
+    // Filter out any null values (accounts that were skipped)
+    const validAdAccounts = adAccountNames.filter(account => account !== null);
+
+    // If no valid accounts were found, send a 404 error
+    if (validAdAccounts.length === 0) {
+      return res.status(404).json({ error: 'No valid ad accounts found for this user' });
+    }
+
+    // Update the user document with the fetched account names if needed
+    await client.db('black-licorice').collection('users').updateOne(
+      { linkedinId: req.user.linkedinId },
+      { $set: { 'adAccounts.$[elem].name': { $each: validAdAccounts.map(acc => acc.name) } } },
+      { arrayFilters: [{ 'elem.accountId': { $in: validAdAccounts.map(acc => acc.id) } }] }
+    );
+
+    res.json({ adAccounts: validAdAccounts });
   } catch (error) {
     console.error('Error fetching ad account names:', error);
     res.status(error.response?.status || 500).send('Error fetching ad account names');
   }
 });
+
 app.get('/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
+  const { accountIds } = req.query; // Expecting an array of account IDs
+
+  if (!accountIds || accountIds.length === 0) {
+    return res.status(400).json({ error: 'No accountIds provided' });
+  }
+
   try {
-    // Fetch the user from the database using LinkedIn ID
+    // Find the user in the database based on the authenticated LinkedIn ID
     const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
 
-    if (!user || !user.adAccounts || user.adAccounts.length === 0) {
-      return res.status(404).json({ error: 'Ad accounts not found for this user' });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
     }
 
-    const userAdAccountID = user.adAccounts[0].accountId.split(':').pop(); // Extract numeric account ID
-    const token = user.accessToken; // Get the user's LinkedIn access token
+    const userId = user.userId; // Get the user's ID from the database
+    const adCampaigns = {};
 
-    // LinkedIn API endpoint for ad campaigns
-    const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
+    // Fetch the existing adCampaigns document for the user
+    const db = client.db('black-licorice');
+    const existingAdCampaignsDoc = await db.collection('adCampaigns').findOne({ userId });
 
-    // Make the API request
-    const response = await axios.get(apiUrl, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'X-RestLi-Protocol-Version': '2.0.0',
-        'LinkedIn-Version': '202406',
-      },
+    // Loop through each accountId and get the ad campaigns for each
+    for (const accountId of accountIds) {
+      const userAdAccountID = accountId.split(':').pop();
+      const token = user.accessToken;
+
+      const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
+
+      try {
+        const response = await axios.get(apiUrl, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'X-RestLi-Protocol-Version': '2.0.0',
+            'LinkedIn-Version': '202406',
+          },
+        });
+
+        // Get existing data for the current ad account if it exists
+        const existingCampaigns = existingAdCampaignsDoc?.adCampaigns?.[accountId]?.campaigns || [];
+        const existingCampaignGroups = existingAdCampaignsDoc?.adCampaigns?.[accountId]?.campaignGroups || [];
+        const existingBudget = existingAdCampaignsDoc?.adCampaigns?.[accountId]?.budget || null;
+
+        // Store the campaigns under the ad account ID key, preserving existing budget
+        adCampaigns[accountId] = {
+          campaigns: response.data.elements || [],
+          campaignGroups: existingCampaignGroups, // Preserve the existing campaign groups
+          budget: existingBudget // Preserve the existing budget
+        };
+      } catch (error) {
+        console.error(`Error fetching ad campaigns for accountId ${accountId}:`, error);
+        adCampaigns[accountId] = {
+          campaigns: existingAdCampaignsDoc?.adCampaigns?.[accountId]?.campaigns || [],
+          campaignGroups: existingCampaignGroups, // Preserve existing data in case of error
+          budget: existingBudget // Preserve the existing budget
+        };
+      }
+    }
+
+    // Add empty arrays for any ad accounts that weren't processed
+    user.adAccounts.forEach(account => {
+      const id = account.accountId;
+      if (!adCampaigns.hasOwnProperty(id)) {
+        adCampaigns[id] = {
+          campaigns: existingAdCampaignsDoc?.adCampaigns?.[id]?.campaigns || [],
+          campaignGroups: existingAdCampaignsDoc?.adCampaigns?.[id]?.campaignGroups || [],
+          budget: existingAdCampaignsDoc?.adCampaigns?.[id]?.budget || null
+        };
+      }
     });
 
-    res.json(response.data);
+    // Save the updated ad campaigns to the database with the userId
+    await db.collection('adCampaigns').updateOne(
+      { userId },
+      { $set: { adCampaigns } },
+      { upsert: true }
+    );
+
+    // Return the ad campaigns data to the client
+    res.json({
+      userId,
+      adCampaigns,
+    });
   } catch (error) {
     console.error('Error fetching ad campaigns:', error);
-    res.status(error.response?.status || 500).send('Error fetching ad campaigns');
+    res.status(500).send('Error fetching ad campaigns');
   }
 });
 
 
-app.get('/get-all-changes', async (req, res) => {
+app.get('/get-all-changes', authenticateToken, async (req, res) => {
+  const userId = req.user.userId;
+  const { adAccountId } = req.query;
+
   try {
     await client.connect();
     const db = client.db('black-licorice');
-    const allChanges = await db.collection('changes').find({}).toArray();
-    res.json(allChanges);
+    const userChanges = await db.collection('changes').findOne({ userId });
+
+    if (userChanges && userChanges.changes[adAccountId]) {
+      res.json(userChanges.changes[adAccountId]);
+    } else {
+      res.json([]); // Return an empty array if no changes are found for the ad account
+    }
   } catch (error) {
-    console.error('Error fetching all changes from database:', error);
+    console.error('Error fetching changes from MongoDB:', error);
     res.status(500).send('Internal Server Error');
   }
 });
