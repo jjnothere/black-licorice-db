@@ -43,10 +43,14 @@ const url = 'mongodb+srv://jjnothere:GREATpoop^6^@black-licorice-cluster.5hb9ank
 const client = new MongoClient(url);
 
 // LinkedIn Strategy for OAuth 2.0
+const callbackURL = process.env.NODE_ENV === 'production'
+  ? "https://black-licorice-800232d1d761.herokuapp.com/auth/linkedin/callback"
+  : "http://localhost:8000/auth/linkedin/callback";
+
 passport.use(new LinkedInStrategy({
   clientID: process.env.LINKEDIN_CLIENT_ID,
   clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
-  callbackURL: "http://localhost:8000/auth/linkedin/callback",
+  callbackURL: callbackURL, // Use the dynamic callback URL
   scope: ['r_ads_reporting', 'r_ads', 'rw_ads', 'r_basicprofile'],
 }, (accessToken, refreshToken, profile, done) => {
   // Pass both the profile and accessToken to be used in the callback
@@ -146,8 +150,14 @@ app.get('/auth/linkedin/callback',
       );
       await usersCollection.updateOne({ linkedinId }, { $set: { refreshToken } });
 
+
+
+      const frontendUrl = process.env.NODE_ENV === 'production'
+      ? 'https://black-licorice-800232d1d761.herokuapp.com/history'
+      : 'http://localhost:5173/history';
+    res.redirect(`${frontendUrl}?token=${jwtAccessToken}&refreshToken=${refreshToken}`);
       // Redirect to the frontend with the access token in the query
-      res.redirect(`http://localhost:5173/history?token=${jwtAccessToken}&refreshToken=${refreshToken}`);
+      // res.redirect(`http://localhost:5173/history?token=${jwtAccessToken}&refreshToken=${refreshToken}`);
     } catch (error) {
       console.error('Error fetching ad accounts or saving user to the database:', error);
       res.status(500).json({ message: 'Internal Server Error' });
