@@ -44,7 +44,7 @@ const client = new MongoClient(url);
 
 // LinkedIn Strategy for OAuth 2.0
 const callbackURL = process.env.NODE_ENV === 'production'
-  ? "https://black-licorice-800232d1d761.herokuapp.com/auth/linkedin/callback"
+  ? "https://black-licorice-800232d1d761.herokuapp.com:51369/auth/linkedin/callback"
   : "http://localhost:8000/auth/linkedin/callback";
 
 passport.use(new LinkedInStrategy({
@@ -1225,7 +1225,6 @@ app.get('/linkedin/ad-campaign-names', authenticateToken, async (req, res) => {
 
     const token = user.accessToken;
     const userAdAccountID = accountId.split(':').pop();
-    console.log("🐒 ~ userAdAccountID:", userAdAccountID)
 
     // LinkedIn API endpoint to get campaigns for the specified ad account
     const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
@@ -1243,7 +1242,6 @@ app.get('/linkedin/ad-campaign-names', authenticateToken, async (req, res) => {
       id: campaign.id,
       name: campaign.name,
     }));
-    console.log("🐒 ~ campaignNames:", campaignNames)
 
     res.json(campaignNames);
   } catch (error) {
