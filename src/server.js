@@ -50,7 +50,7 @@ const callbackURL = process.env.NODE_ENV === 'production'
 passport.use(new LinkedInStrategy({
   clientID: process.env.LINKEDIN_CLIENT_ID,
   clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
-  callbackURL: callbackURL, // Use the dynamic callback URL
+  callbackURL: "https://black-licorice-800232d1d761.herokuapp.com:51369/auth/linkedin/callback", // Use the dynamic callback URL
   scope: ['r_ads_reporting', 'r_ads', 'rw_ads', 'r_basicprofile'],
 }, (accessToken, refreshToken, profile, done) => {
   // Pass both the profile and accessToken to be used in the callback
