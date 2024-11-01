@@ -44,17 +44,16 @@ const client = new MongoClient(url);
 
 // LinkedIn Strategy for OAuth 2.0
 const callbackURL = process.env.NODE_ENV === 'production'
-  ? "https://black-licorice-800232d1d761.herokuapp.com/auth/linkedin/callback"
-  : "http://localhost:8000/auth/linkedin/callback";
+  ? process.env.CALLBACK_URL_PROD
+  : process.env.CALLBACK_URL_DEV;
 
 passport.use(new LinkedInStrategy({
   clientID: process.env.LINKEDIN_CLIENT_ID,
   clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
-  callbackURL: "https://black-licorice-800232d1d761.herokuapp.com/auth/linkedin/callback", // Use the dynamic callback URL
+  callbackURL: callbackURL,
   scope: ['r_ads_reporting', 'r_ads', 'rw_ads', 'r_basicprofile'],
 }, (accessToken, refreshToken, profile, done) => {
-  // Pass both the profile and accessToken to be used in the callback
-  return done(null, { profile, accessToken });
+  return done(null, { profile, accessToken, refreshToken });
 }));
 
 // LinkedIn authentication route
@@ -76,16 +75,17 @@ app.get('/auth/linkedin/callback',
         return res.status(400).json({ error: 'Access token not found' });
       }
 
-      // Extract necessary details from LinkedIn profile
-      const linkedinId = profile.id;  // Using linkedinId instead of email
-      const firstName = profile.name.givenName;
-      const lastName = profile.name.familyName;
-
+      // MongoDB connection and user setup
       await client.connect();
       const db = client.db('black-licorice');
       const usersCollection = db.collection('users');
 
-      // Call LinkedIn API to fetch the user's ad accounts
+      // Extract necessary details from LinkedIn profile
+      const linkedinId = profile.id;
+      const firstName = profile.name.givenName;
+      const lastName = profile.name.familyName;
+
+      // LinkedIn API call to fetch the user's ad accounts
       const adAccountsUrl = `https://api.linkedin.com/rest/adAccountUsers?q=authenticatedUser`;
       const adAccountsResponse = await axios.get(adAccountsUrl, {
         headers: {
@@ -97,52 +97,52 @@ app.get('/auth/linkedin/callback',
 
       // Map ad accounts to include the initialized campaigns array
       const adAccounts = adAccountsResponse.data.elements.map(account => ({
-        accountId: account.account.split(':').pop(), // Extract only the accountId part
+        accountId: account.account.split(':').pop(),
         role: account.role,
-        campaigns: [] // Initialize an empty array for campaigns
       }));
 
-      // Check if user already exists in the database
+      // Check if user already exists
       const existingUser = await usersCollection.findOne({ linkedinId });
-
       let user;
 
       if (existingUser) {
-        // Update the user's access token and ad accounts
+        // Update user details and ad accounts
         await usersCollection.updateOne(
           { linkedinId },
           {
             $set: {
-              accessToken: accessToken,
-              firstName: firstName,
-              lastName: lastName,
+              accessToken,
+              firstName,
+              lastName,
               lastLogin: new Date(),
-              adAccounts: adAccounts, // Save ad account info with initialized campaigns
+              adAccounts,
             },
           }
         );
         user = existingUser;
       } else {
-        // If user does not exist, create a new user
+        // Create a new user
         const newUser = {
-          linkedinId: linkedinId,
-          accessToken: accessToken,
-          firstName: firstName,
-          lastName: lastName,
-          userId: uuidv4(),  // Generate a unique userId
+          linkedinId,
+          accessToken,
+          firstName,
+          lastName,
+          userId: uuidv4(),
           createdAt: new Date(),
-          adAccounts: adAccounts, // Save ad account info with initialized campaigns
+          adAccounts,
         };
         await usersCollection.insertOne(newUser);
         user = newUser;
       }
 
-      // Generate a JWT token with linkedinId and userId (no email)
+      // Generate a JWT token
       const jwtAccessToken = jwt.sign(
         { linkedinId: user.linkedinId, userId: user.userId },
         process.env.LINKEDIN_CLIENT_SECRET,
         { expiresIn: '2h' }
       );
+
+      // Generate a refresh token
       const refreshToken = jwt.sign(
         { linkedinId: user.linkedinId, userId: user.userId },
         process.env.REFRESH_TOKEN_SECRET,
@@ -150,16 +150,15 @@ app.get('/auth/linkedin/callback',
       );
       await usersCollection.updateOne({ linkedinId }, { $set: { refreshToken } });
 
-
-
+      // Dynamic frontend URL based on environment
       const frontendUrl = process.env.NODE_ENV === 'production'
-      ? 'https://black-licorice-800232d1d761.herokuapp.com/history'
-      : 'http://localhost:5173/history';
-    // res.redirect(`${frontendUrl}?token=${jwtAccessToken}&refreshToken=${refreshToken}`);
-      // Redirect to the frontend with the access token in the query
-      res.redirect(`https://black-licorice-800232d1d761.herokuapp.com/history?token=${jwtAccessToken}&refreshToken=${refreshToken}`);
+        ? process.env.FRONTEND_URL_PROD
+        : process.env.FRONTEND_URL_DEV;
+
+      // Redirect to the frontend with the tokens in the query parameters
+      res.redirect(`${frontendUrl}/history?token=${jwtAccessToken}&refreshToken=${refreshToken}`);
     } catch (error) {
-      console.error('Error fetching ad accounts or saving user to the database:', error);
+      console.error('Error in LinkedIn callback:', error);
       res.status(500).json({ message: 'Internal Server Error' });
     }
   }
