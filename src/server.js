@@ -11,14 +11,19 @@ import cron from 'node-cron';
 import dotenv from 'dotenv';
 import passport from 'passport';
 import { Strategy as LinkedInStrategy } from 'passport-linkedin-oauth2';
-import session from 'express-session';
+import session from 'express-session';import cookieParser from 'cookie-parser';
 
 dotenv.config(); // Load environment variables
 
 const app = express();
 app.use(express.json());
-app.use(cors()); // Enable CORS
+app.use(cookieParser());
 
+
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' ? process.env.FRONTEND_URL_PROD : process.env.FRONTEND_URL_DEV,
+  credentials: true, // allows sending cookies and auth headers
+}));
 // Configure session
 app.use(session({
   secret: process.env.SESSION_SECRET,
@@ -62,30 +67,24 @@ app.get('/auth/linkedin', (req, res, next) => {
 }, passport.authenticate('linkedin'));
 
 // LinkedIn callback route
-// LinkedIn callback route
 app.get('/auth/linkedin/callback',
   passport.authenticate('linkedin', { failureRedirect: '/' }),
   async (req, res) => {
     try {
       const { accessToken, profile } = req.user;
 
-      // Check if the accessToken is available
       if (!accessToken) {
         console.error('Error: Access token not found');
         return res.status(400).json({ error: 'Access token not found' });
       }
 
-      // MongoDB connection and user setup
       await client.connect();
       const db = client.db('black-licorice');
       const usersCollection = db.collection('users');
-
-      // Extract necessary details from LinkedIn profile
       const linkedinId = profile.id;
       const firstName = profile.name.givenName;
       const lastName = profile.name.familyName;
 
-      // LinkedIn API call to fetch the user's ad accounts
       const adAccountsUrl = `https://api.linkedin.com/rest/adAccountUsers?q=authenticatedUser`;
       const adAccountsResponse = await axios.get(adAccountsUrl, {
         headers: {
@@ -95,18 +94,15 @@ app.get('/auth/linkedin/callback',
         },
       });
 
-      // Map ad accounts to include the initialized campaigns array
       const adAccounts = adAccountsResponse.data.elements.map(account => ({
         accountId: account.account.split(':').pop(),
         role: account.role,
       }));
 
-      // Check if user already exists
       const existingUser = await usersCollection.findOne({ linkedinId });
       let user;
 
       if (existingUser) {
-        // Update user details and ad accounts
         await usersCollection.updateOne(
           { linkedinId },
           {
@@ -121,7 +117,6 @@ app.get('/auth/linkedin/callback',
         );
         user = existingUser;
       } else {
-        // Create a new user
         const newUser = {
           linkedinId,
           accessToken,
@@ -135,14 +130,12 @@ app.get('/auth/linkedin/callback',
         user = newUser;
       }
 
-      // Generate a JWT token
       const jwtAccessToken = jwt.sign(
         { linkedinId: user.linkedinId, userId: user.userId },
         process.env.LINKEDIN_CLIENT_SECRET,
         { expiresIn: '2h' }
       );
 
-      // Generate a refresh token
       const refreshToken = jwt.sign(
         { linkedinId: user.linkedinId, userId: user.userId },
         process.env.REFRESH_TOKEN_SECRET,
@@ -150,43 +143,64 @@ app.get('/auth/linkedin/callback',
       );
       await usersCollection.updateOne({ linkedinId }, { $set: { refreshToken } });
 
-      // Dynamic frontend URL based on environment
+      // Set the tokens in cookies
+      res.cookie('accessToken', jwtAccessToken, {
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 2 * 60 * 60 * 1000, // 2 hours
+      });
+      
+      res.cookie('refreshToken', refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        path: '/',
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      });
+
+      console.log('Access and Refresh Tokens Set');
+
       const frontendUrl = process.env.NODE_ENV === 'production'
         ? process.env.FRONTEND_URL_PROD
         : process.env.FRONTEND_URL_DEV;
 
-      // Redirect to the frontend with the tokens in the query parameters
-      res.redirect(`${frontendUrl}/history?token=${jwtAccessToken}&refreshToken=${refreshToken}`);
+      // Redirect to the frontend history page after successful login
+      if (!res.headersSent) {
+        return res.redirect(`${frontendUrl}/history`);
+      }
+
     } catch (error) {
       console.error('Error in LinkedIn callback:', error);
-      res.status(500).json({ message: 'Internal Server Error' });
+      if (!res.headersSent) {
+        res.status(500).json({ message: 'Internal Server Error' });
+      }
     }
   }
 );
 
-
 // Token verification middleware
 const authenticateToken = (req, res, next) => {
-  const token = req.headers['authorization']?.split(' ')[1]; // Extract Bearer token
+  const token = req.cookies.accessToken || req.headers['authorization']?.split(' ')[1];
+
   if (!token) return res.status(401).json({ message: 'Access Denied' });
 
   try {
     const verified = jwt.verify(token, process.env.LINKEDIN_CLIENT_SECRET);
-    req.user = verified; // Attach user info to the request
-    next(); // Proceed if token is valid
+    req.user = verified;
+    next();
   } catch (error) {
     return res.status(403).json({ message: 'Invalid Token' });
   }
 };
 
-// Logout route
-app.post('/logout', authenticateToken, async (req, res) => {
+app.post('/api/logout', authenticateToken, async (req, res) => {
   try {
     await client.connect();
     const db = client.db('black-licorice');
     const usersCollection = db.collection('users');
 
     await usersCollection.updateOne({ linkedinId: req.user.linkedinId }, { $unset: { refreshToken: '' } });
+
+    res.clearCookie('accessToken');
+    res.clearCookie('refreshToken');
     res.status(200).json({ message: 'Logged out successfully' });
   } catch (error) {
     console.error('Error during logout:', error);
@@ -194,9 +208,8 @@ app.post('/logout', authenticateToken, async (req, res) => {
   }
 });
 
-// Refresh token route
-app.post('/refresh-token', async (req, res) => {
-  const { token } = req.body;
+app.post('/api/refresh-token', (req, res) => {
+  const token = req.cookies.refreshToken;
   if (!token) return res.status(403).send('Refresh token required.');
 
   try {
@@ -206,7 +219,14 @@ app.post('/refresh-token', async (req, res) => {
       process.env.LINKEDIN_CLIENT_SECRET,
       { expiresIn: '1h' }
     );
-    res.json({ accessToken: newAccessToken });
+
+    res.cookie('accessToken', newAccessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 60 * 60 * 1000, // 1 hour
+    });
+
+    res.json({ message: 'Access token refreshed' });
   } catch (error) {
     console.error('Error refreshing token:', error);
     res.status(403).json({ message: 'Invalid refresh token' });
@@ -214,7 +234,7 @@ app.post('/refresh-token', async (req, res) => {
 });
 
 // Test route
-app.get('/protected', authenticateToken, (req, res) => {
+app.get('/api/protected', authenticateToken, (req, res) => {
   res.json({ message: 'You have access to protected route' });
 });
 
@@ -230,9 +250,6 @@ app.get('/protected', authenticateToken, (req, res) => {
 
 
 // Enable CORS for development
-if (process.env.NODE_ENV !== 'production') {
-  app.use(cors({ origin: 'http://localhost:5173' }));
-}
 // Schedule the checkForChanges function to run every day at 2:15 PM
 cron.schedule('0 23 * * *', async () => {
   try {
@@ -393,7 +410,7 @@ async function saveChanges(db, changes, userId, adAccountId) {
 }
 
 // Route to get the user's ad accounts
-app.get('/get-user-ad-accounts', authenticateToken, async (req, res) => {
+app.get('/api/get-user-ad-accounts', authenticateToken, async (req, res) => {
   try {
     // Fetch the user based on the authenticated LinkedIn ID
     const user = await client.db('black-licorice')
@@ -418,7 +435,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, '../public')));
 
-app.get('/hello', async (req, res) => {
+app.get('/api/hello', async (req, res) => {
   await client.connect();
   const db = client.db('black-licorice');
   const items = await db.collection('items').find({}).toArray();
@@ -448,7 +465,7 @@ app.get('/hello', async (req, res) => {
 // }
 
 // Save budget endpoint
-app.post('/save-budget', authenticateToken, async (req, res) => {
+app.post('/api/save-budget', authenticateToken, async (req, res) => {
   const { accountId, budget } = req.body; // Include accountId in the request body
   const userId = req.user.userId;
 
@@ -471,7 +488,7 @@ app.post('/save-budget', authenticateToken, async (req, res) => {
   }
 });
 // Fetch budget endpoint
-app.get('/get-budget', authenticateToken, async (req, res) => {
+app.get('/api/get-budget', authenticateToken, async (req, res) => {
   const { accountId } = req.query;
   const userId = req.user.userId;
 
@@ -502,7 +519,7 @@ app.get('/get-budget', authenticateToken, async (req, res) => {
 });
 
 // API route to update the logged-in user's ad account ID
-app.post('/update-account-id', authenticateToken, async (req, res) => {
+app.post('/api/update-account-id', authenticateToken, async (req, res) => {
   const { accountId } = req.body;
 
   try {
@@ -521,7 +538,7 @@ app.post('/update-account-id', authenticateToken, async (req, res) => {
 });
 
 // API route to fetch the logged-in user's profile
-app.get('/user-profile', authenticateToken, async (req, res) => {
+app.get('/api/user-profile', authenticateToken, async (req, res) => {
   try {
     const user = await client.db('black-licorice').collection('users').findOne(
       { linkedinId: req.user.linkedinId }, 
@@ -547,7 +564,7 @@ app.get('/user-profile', authenticateToken, async (req, res) => {
 });
 
 // User registration route
-app.post('/signup', async (req, res) => {
+app.post('/api/signup', async (req, res) => {
   const { email, password, rePassword, accountId } = req.body;
   
   if (password !== rePassword) {
@@ -593,13 +610,13 @@ app.post('/signup', async (req, res) => {
 });
 
 // Simple test route
-app.get('/test', (req, res) => {
+app.get('/api/test', (req, res) => {
   res.json({ message: 'Server is working!' });
 });
 
 
 // User login route
-app.post('/login', async (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { linkedinId, password } = req.body;  // No email, just linkedinId and password for login
 
   try {
@@ -638,7 +655,7 @@ app.post('/login', async (req, res) => {
 // Backend route to update a campaign group
 // Update an existing campaign group
 // Backend route to update a campaign group
-app.post('/update-campaign-group', authenticateToken, async (req, res) => {
+app.post('/api/update-campaign-group', authenticateToken, async (req, res) => {
   const { group, accountId } = req.body;
   const userId = req.user.userId;
 
@@ -673,7 +690,7 @@ app.post('/update-campaign-group', authenticateToken, async (req, res) => {
 // Backend route to delete a campaign group
 // Delete a campaign group from the specified ad account
 // Backend route to delete a campaign group
-app.post('/delete-campaign-group', authenticateToken, async (req, res) => {
+app.post('/api/delete-campaign-group', authenticateToken, async (req, res) => {
   const { groupId, accountId } = req.body;
   const userId = req.user.userId;
 
@@ -700,7 +717,7 @@ app.post('/delete-campaign-group', authenticateToken, async (req, res) => {
 });
 
 // Fetch campaign groups for a specific ad account
-app.get('/user-campaign-groups', authenticateToken, async (req, res) => {
+app.get('/api/user-campaign-groups', authenticateToken, async (req, res) => {
   const { accountId } = req.query;
   const userId = req.user.userId;
 
@@ -724,7 +741,7 @@ app.get('/user-campaign-groups', authenticateToken, async (req, res) => {
 // Endpoint to save campaign groups to user doc
 // Endpoint to save campaign groups to user doc
 // Revised save-campaign-groups endpoint
-app.post('/save-campaign-groups', authenticateToken, async (req, res) => {
+app.post('/api/save-campaign-groups', authenticateToken, async (req, res) => {
   const { group, accountId } = req.body;
   const userId = req.user.userId;
 
@@ -760,7 +777,7 @@ app.post('/save-campaign-groups', authenticateToken, async (req, res) => {
 });
 
 // Get campaigns for the logged-in user
-app.get('/get-current-campaigns', authenticateToken, async (req, res) => {
+app.get('/api/get-current-campaigns', authenticateToken, async (req, res) => {
   const userId = req.user.userId;
   const { accountId } = req.query;
 
@@ -814,7 +831,7 @@ app.get('/get-current-campaigns', authenticateToken, async (req, res) => {
 //   }
 // });
 
-app.post('/save-changes', authenticateToken, async (req, res) => {
+app.post('/api/save-changes', authenticateToken, async (req, res) => {
   const { changes, adAccountId } = req.body; 
   const userId = req.user.userId;
 
@@ -860,7 +877,7 @@ app.post('/save-changes', authenticateToken, async (req, res) => {
 });
 
 // Add Note Endpoint
-app.post('/add-note', authenticateToken, async (req, res) => {
+app.post('/api/add-note', authenticateToken, async (req, res) => {
   const { accountId, campaignId, newNote } = req.body;
   const userId = req.user.userId;
 
@@ -890,7 +907,7 @@ app.post('/add-note', authenticateToken, async (req, res) => {
 });
 
 // Edit Note Endpoint
-app.post('/edit-note', authenticateToken, async (req, res) => {
+app.post('/api/edit-note', authenticateToken, async (req, res) => {
   const { accountId, campaignId, noteId, updatedNote } = req.body;
   const userId = req.user.userId;
 
@@ -931,7 +948,7 @@ app.post('/edit-note', authenticateToken, async (req, res) => {
 });
 
 // Delete Note Endpoint
-app.post('/delete-note', authenticateToken, async (req, res) => {
+app.post('/api/delete-note', authenticateToken, async (req, res) => {
   const { accountId, campaignId, noteId } = req.body;
   const userId = req.user.userId;
 
@@ -965,7 +982,7 @@ app.post('/delete-note', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/get-all-changes', authenticateToken, async (req, res) => {
+app.get('/api/get-all-changes', authenticateToken, async (req, res) => {
   const userId = req.user.userId;
   const { adAccountId } = req.query;
 
@@ -985,7 +1002,7 @@ app.get('/get-all-changes', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/save-campaigns', authenticateToken, async (req, res) => {
+app.post('/api/save-campaigns', authenticateToken, async (req, res) => {
   const { campaigns, accountId } = req.body;
   const userId = req.user.userId;
 
@@ -1012,7 +1029,7 @@ app.post('/save-campaigns', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/linkedin', authenticateToken, async (req, res) => {
+app.get('/api/linkedin', authenticateToken, async (req, res) => {
   const { start, end, campaigns, accountId } = req.query;
 
   if (!accountId) {
@@ -1052,7 +1069,7 @@ app.get('/linkedin', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/ad-account-name', authenticateToken, async (req, res) => {
+app.get('/api/ad-account-name', authenticateToken, async (req, res) => {
   try {
     const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
 
@@ -1118,7 +1135,7 @@ app.get('/ad-account-name', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
+app.get('/api/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
   const { accountIds } = req.query; // Expecting an array of account IDs
 
   if (!accountIds || accountIds.length === 0) {
@@ -1208,7 +1225,7 @@ app.get('/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
 });
         
 // Route to get campaign names for a specific ad account
-app.get('/linkedin/ad-campaign-names', authenticateToken, async (req, res) => {
+app.get('/api/linkedin/ad-campaign-names', authenticateToken, async (req, res) => {
   const { accountId } = req.query;
 
   if (!accountId) {
@@ -1249,7 +1266,7 @@ app.get('/linkedin/ad-campaign-names', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/get-all-changes', authenticateToken, async (req, res) => {
+app.get('/api/get-all-changes', authenticateToken, async (req, res) => {
   const userId = req.user.userId;
   const { adAccountId } = req.query;
 
@@ -1269,7 +1286,7 @@ app.get('/get-all-changes', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/linkedin/ad-campaign-groups', authenticateToken, async (req, res) => {
+app.get('/api/linkedin/ad-campaign-groups', authenticateToken, async (req, res) => {
   try {
     // Fetch the user from the database using LinkedIn ID
     const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
