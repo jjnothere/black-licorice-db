@@ -11,7 +11,8 @@ import cron from 'node-cron';
 import dotenv from 'dotenv';
 import passport from 'passport';
 import { Strategy as LinkedInStrategy } from 'passport-linkedin-oauth2';
-import session from 'express-session';import cookieParser from 'cookie-parser';
+import session from 'express-session';
+import cookieParser from 'cookie-parser';
 
 dotenv.config(); // Load environment variables
 
