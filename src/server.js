@@ -252,81 +252,74 @@ app.get('/api/protected', authenticateToken, (req, res) => {
 
 // Enable CORS for development
 // Schedule the checkForChanges function to run every day at 2:15 PM
-cron.schedule('0 23 * * *', async () => {
+cron.schedule('30 23 * * *', async () => {
   try {
     await checkForChangesForAllUsers();
   } catch (error) {
-    console.error('Error running checkForChanges task:', error);
+    console.error('Error running scheduled checkForChangesForAllUsers:', error);
   }
 });
 
+// Function to iterate through all users and check for campaign changes
 async function checkForChangesForAllUsers() {
   try {
     await client.connect();
     const db = client.db('black-licorice');
     const usersCollection = db.collection('users');
 
+    // Fetch all users from the database
     const users = await usersCollection.find({}).toArray();
 
     for (const user of users) {
-      await checkForChanges(user.userId, user.accountId, db);
+      const { userId, accessToken, adAccounts } = user;
+      if (!accessToken) {
+        console.warn(`Access token missing for user ${userId}`);
+        continue;
+      }
+
+      // Loop through each ad account of the user
+      for (const account of adAccounts) {
+        const accountId = account.accountId;
+        try {
+          // Check for changes in campaigns for the current user and ad account
+          await checkForChanges(userId, accountId, accessToken, db);
+        } catch (error) {
+          console.error(`Error in checking changes for user ${userId}, account ${accountId}:`, error);
+        }
+      }
     }
   } catch (error) {
     console.error('Error in checkForChangesForAllUsers:', error);
   }
 }
 
-async function checkForChanges(userId, userAdAccountID, db) {
-  try {
-    const differences = [];
-    const currentCampaigns = await fetchCurrentCampaigns(db, userId, userAdAccountID); // Fetch campaigns for the specific ad account
-    const linkedInCampaigns = await fetchLinkedInCampaigns(userAdAccountID); // Fetch campaigns from LinkedIn API
+// Function to fetch and check differences for a specific user and ad account
+async function checkForChanges(userId, accountId, token, db) {
+  const currentCampaigns = await fetchCurrentCampaigns(db, userId, accountId); // Existing campaigns in the database
+  const linkedInCampaigns = await fetchLinkedInCampaigns(accountId, token); // Campaigns from LinkedIn API
 
-    const newDifferences = [];
+  // Find differences between current campaigns and LinkedIn campaigns
+  const newDifferences = [];
 
-    linkedInCampaigns.forEach(campaign2 => {
-      const campaign1 = currentCampaigns.find(c => c.id === campaign2.id);
-      if (campaign1) {
-        const changes = findDifferences(campaign1, campaign2);
-        if (Object.keys(changes).length > 0) {
-          const changesString = Object.entries(changes)
-            .map(([key, value]) => `${key}: <span class="old-value">${JSON.stringify(value.old)}</span> => <span class="new-value">${JSON.stringify(value.new)}</span>`)
-            .join('<br>');
-          newDifferences.push({
-            campaign: campaign2.name,
-            date: new Date().toLocaleDateString(),
-            changes: changesString,
-            notes: campaign2.notes || [],
-            addingNote: false,
-            _id: campaign1._id // Ensure we have the correct MongoDB ID
-          });
-        }
-      } else {
+  linkedInCampaigns.forEach(campaign2 => {
+    const campaign1 = currentCampaigns.find(c => c.id === campaign2.id);
+    if (campaign1) {
+      const changes = findDifferences(campaign1, campaign2);
+      if (Object.keys(changes).length > 0) {
         newDifferences.push({
           campaign: campaign2.name,
           date: new Date().toLocaleDateString(),
-          changes: `New campaign added: <span class="new-campaign">${campaign2.name}</span>`,
+          changes: changes,
           notes: campaign2.notes || [],
-          addingNote: false,
-          _id: campaign2._id // Include _id if available
+          _id: campaign1._id // Ensure correct MongoDB ID
         });
       }
-    });
+    }
+  });
 
-    const uniqueDifferences = newDifferences.filter(newDiff =>
-      !differences.some(existingDiff =>
-        existingDiff.campaign === newDiff.campaign &&
-        existingDiff.date === newDiff.date &&
-        existingDiff.changes === newDiff.changes
-      )
-    );
-
-    await saveCampaigns(db, linkedInCampaigns, userId, props.selectedAdAccountId);
-    // After finding differences between LinkedIn and stored campaigns
-    await saveChanges(db, uniqueDifferences, userId, selectedAdAccountId); // Calls saveChanges
-  } catch (error) {
-    console.error(`Error in checkForChanges for user ${userId} and ad account ${userAdAccountID}:`, error);
-  }
+  // Save new campaigns and differences in the database
+  await saveCampaigns(db, linkedInCampaigns, userId, accountId);
+  await saveChanges(db, newDifferences, userId, accountId);
 }
 
 async function fetchCurrentCampaigns(db, userId, accountId) {
@@ -334,15 +327,22 @@ async function fetchCurrentCampaigns(db, userId, accountId) {
   return userCampaigns?.adCampaigns?.[accountId]?.campaigns || [];
 }
 
-async function fetchLinkedInCampaigns(userAdAccountID) {
-  const response = await axios.get(`https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'X-RestLi-Protocol-Version': '2.0.0',
-      'LinkedIn-Version': '202406',
-    },
-  });
-  return response.data.elements || [];
+async function fetchLinkedInCampaigns(accountId, token) {
+  const apiUrl = `https://api.linkedin.com/rest/adAccounts/${accountId}/adCampaigns?q=search&sortOrder=DESCENDING`;
+
+  try {
+    const response = await axios.get(apiUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'X-RestLi-Protocol-Version': '2.0.0',
+        'LinkedIn-Version': '202406',
+      },
+    });
+    return response.data.elements || [];
+  } catch (error) {
+    console.error(`Error fetching LinkedIn campaigns for account ${accountId}:`, error);
+    return [];
+  }
 }
 
 async function saveCampaigns(db, campaigns, userId) {
@@ -357,58 +357,121 @@ async function saveCampaigns(db, campaigns, userId) {
 }
 
 const findDifferences = (obj1, obj2, prefix = '') => {
-  const diffs = {};
-  for (const key in obj1) {
-    if (typeof obj1[key] === 'object' && typeof obj2[key] === 'object') {
-      const nestedDiffs = findDifferences(obj1[key], obj2[key], `${prefix}${key}.`);
-      Object.assign(diffs, nestedDiffs);
-    } else if (JSON.stringify(obj1[key]) !== JSON.stringify(obj2[key])) {
-      diffs[`${prefix}${key}`] = { old: obj1[key], new: obj2[key] };
+
+
+  const keyMapping = {
+    account: 'Account',
+    associatedEntity: 'Associated Entity',
+    audienceExpansionEnabled: 'Audience Expansion',
+    campaignGroup: 'Campaign Group',
+    costType: 'Cost Type',
+    creativeSelection: 'Creative Selection',
+    dailyBudget: 'Daily Budget',
+    format: 'Format',
+    id: 'ID',
+    locale: 'Locale',
+    name: 'Name',
+    objectiveType: 'Objective Type',
+    offsiteDeliveryEnabled: 'Offsite Delivery',
+    offsitePreferences: 'Offsite Preferences',
+    optimizationTargetType: 'Optimization Target Type',
+    pacingStrategy: 'Pacing Strategy',
+    runSchedule: 'Run Schedule',
+    servingStatuses: 'Serving Statuses',
+    status: 'Status',
+    storyDeliveryEnabled: 'Story Delivery',
+    targetingCriteria: 'Targeting Criteria',
+    test: 'Test',
+    type: 'Campaign Type',
+    unitCost: 'Unit Cost',
+    version: 'Version'
+  }
+
+
+    const diffs = {};
+    for (const key in obj1) {
+      if (key === 'changeAuditStamps') continue; // Exclude changeAuditStamps
+      if (JSON.stringify(obj1[key]) !== JSON.stringify(obj2[key])) {
+        diffs[key] = true; // Only keep the key
+      }
     }
-  }
-  return diffs;
-};
+    return Object.keys(diffs).map(key => keyMapping[key] || key);
+  };
 
-
-async function saveChanges(db, changes, userId, adAccountId) {
-  if (!adAccountId) {
-    console.error("Error: adAccountId is undefined.");
-    return; // Exit if adAccountId is not provided
-  }
-
-  const collection = db.collection('changes');
-  const changesWithIds = changes.map(change => ({
-    ...change,
-    _id: change._id ? new ObjectId(change._id) : new ObjectId()
-  }));
-
-  const existingUserChanges = await collection.findOne({ userId });
-
-  if (existingUserChanges) {
-    const existingAdAccountChanges = existingUserChanges.changes[adAccountId] || [];
-
-    const uniqueChanges = changesWithIds.filter(newChange =>
-      !existingAdAccountChanges.some(existingChange =>
-        existingChange._id.equals(newChange._id) ||
-        (existingChange.campaign === newChange.campaign &&
-          existingChange.date === newChange.date &&
-          existingChange.changes === newChange.changes)
-      )
-    );
-
-    if (uniqueChanges.length > 0) {
-      await collection.updateOne(
-        { userId },
-        { $push: { [`changes.${adAccountId}`]: { $each: uniqueChanges } } }
+  async function saveChanges(db, changes, userId, adAccountId) {
+    const colorMapping = {
+      Account: '#FF5733', // Bright Red
+      'Associated Entity': '#33C3FF', // Light Blue
+      'Audience Expansion': '#28A745', // Green
+      'Campaign Group': '#AF7AC5', // Purple
+      'Cost Type': '#FFB533', // Orange
+      'Creative Selection': '#FF69B4', // Pink
+      'Daily Budget': '#17A2B8', // Cyan
+      Format: '#FFD700', // Gold/Yellow
+      ID: '#FF33C9', // Magenta
+      Locale: '#8B4513', // Saddle Brown
+      Name: '#32CD32', // Lime Green
+      'Objective Type': '#000080', // Navy Blue
+      'Offsite Delivery': '#808000', // Olive Green
+      'Offsite Preferences': '#20B2AA', // Light Sea Green
+      'Optimization Target Type': '#800000', // Maroon
+      'Pacing Strategy': '#FF4500', // Orange Red
+      'Run Schedule': '#4682B4', // Steel Blue
+      'Serving Statuses': '#1E90FF', // Dodger Blue
+      Status: '#228B22', // Forest Green
+      'Story Delivery': '#DC143C', // Crimson Red
+      'Targeting Criteria': '#FF8C00', // Dark Orange
+      Test: '#00CED1', // Dark Turquoise
+      Type: '#9932CC', // Dark Orchid
+      'Unit Cost': '#DAA520', // Goldenrod
+      Version: '#FF6347' // Tomato
+    };
+  
+    if (!adAccountId) {
+      console.error("Error: adAccountId is undefined.");
+      return; // Exit if adAccountId is not provided
+    }
+  
+    const collection = db.collection('changes');
+    
+    const changesWithIds = changes.map(change => ({
+      ...change,
+      _id: change._id ? new ObjectId(change._id) : new ObjectId(),
+      changes: Array.isArray(change.changes)
+        ? change.changes.map(changeType => {
+            const color = colorMapping[changeType] || 'black';
+            return `<span style="color:${color};">${changeType}</span>`;
+          }).join('<br>')
+        : change.changes // If `changes` is not an array, use it directly
+    }));
+  
+    const existingUserChanges = await collection.findOne({ userId });
+  
+    if (existingUserChanges) {
+      const existingAdAccountChanges = existingUserChanges.changes[adAccountId] || [];
+  
+      const uniqueChanges = changesWithIds.filter(newChange =>
+        !existingAdAccountChanges.some(existingChange =>
+          existingChange._id.equals(newChange._id) ||
+          (existingChange.campaign === newChange.campaign &&
+            existingChange.date === newChange.date &&
+            existingChange.changes === newChange.changes)
+        )
       );
+  
+      if (uniqueChanges.length > 0) {
+        await collection.updateOne(
+          { userId },
+          { $push: { [`changes.${adAccountId}`]: { $each: uniqueChanges } } }
+        );
+      }
+    } else {
+      await collection.insertOne({
+        userId,
+        changes: { [adAccountId]: changesWithIds }
+      });
     }
-  } else {
-    await collection.insertOne({
-      userId,
-      changes: { [adAccountId]: changesWithIds }
-    });
   }
-}
 
 // Route to get the user's ad accounts
 app.get('/api/get-user-ad-accounts', authenticateToken, async (req, res) => {
