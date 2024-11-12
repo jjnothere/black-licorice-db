@@ -179,14 +179,21 @@ app.get('/auth/linkedin/callback',
 
 // Token verification middleware
 const authenticateToken = (req, res, next) => {
-  const token = req.cookies.accessToken || req.headers['authorization']?.split(' ')[1];
+  const token = req.cookies.accessToken;
 
-  if (!token) return res.status(401).json({ message: 'Access Denied' });
+  if (!token) {
+    return res.status(401).json({ message: 'Access Denied' });
+  }
 
   try {
-    const verified = jwt.verify(token, process.env.LINKEDIN_CLIENT_SECRET);
-    req.user = verified;
-    next();
+    // Verify the access token
+    jwt.verify(token, process.env.LINKEDIN_CLIENT_SECRET, (err, user) => {
+      if (err) {
+        return res.status(403).json({ message: 'Invalid or expired token' });
+      }
+      req.user = user;
+      next();
+    });
   } catch (error) {
     return res.status(403).json({ message: 'Invalid Token' });
   }
@@ -210,21 +217,41 @@ app.post('/api/logout', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/refresh-token', (req, res) => {
-  const token = req.cookies.refreshToken;
-  if (!token) return res.status(403).send('Refresh token required.');
+  const refreshToken = req.cookies.refreshToken;
+
+  if (!refreshToken) {
+    return res.status(403).json({ message: 'Refresh token required' });
+  }
 
   try {
-    const decoded = jwt.verify(token, process.env.REFRESH_TOKEN_SECRET);
+    // Verify the refresh token
+    const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+
+    // Generate a new access token
     const newAccessToken = jwt.sign(
-      { linkedinId: decoded.linkedinId, userId: decoded.userId },
+      { userId: decoded.userId, linkedinId: decoded.linkedinId },
       process.env.LINKEDIN_CLIENT_SECRET,
       { expiresIn: '1h' }
     );
 
+    // Optionally, issue a new refresh token if necessary
+    const newRefreshToken = jwt.sign(
+      { userId: decoded.userId, linkedinId: decoded.linkedinId },
+      process.env.REFRESH_TOKEN_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    // Update cookies with the new tokens
     res.cookie('accessToken', newAccessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       maxAge: 60 * 60 * 1000, // 1 hour
+    });
+
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
     res.json({ message: 'Access token refreshed' });
@@ -234,6 +261,69 @@ app.post('/api/refresh-token', (req, res) => {
   }
 });
 
+// Endpoint to fetch LinkedIn ad campaign groups and map campaigns to each group
+app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (req, res) => {
+  const { accountId } = req.query;
+
+  if (!accountId) {
+    console.log('Account ID not provided');
+    return res.status(400).json({ error: 'Account ID is required' });
+  }
+
+  try {
+    console.log('Fetching user from the database...');
+    const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
+
+    if (!user || !user.accessToken) {
+      console.log('User or access token not found');
+      return res.status(404).json({ error: 'User or access token not found' });
+    }
+
+    const token = user.accessToken;
+    const userAdAccountID = accountId.split(':').pop();
+    console.log('Access token and account ID:', token, userAdAccountID);
+
+    const campaignGroupsUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaignGroups?q=search&sortOrder=DESCENDING`;
+    const campaignsUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
+
+    console.log('Fetching campaign groups and campaigns from LinkedIn...');
+    const [groupsResponse, campaignsResponse] = await Promise.all([
+      axios.get(campaignGroupsUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-RestLi-Protocol-Version': '2.0.0',
+          'LinkedIn-Version': '202406',
+        },
+      }),
+      axios.get(campaignsUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-RestLi-Protocol-Version': '2.0.0',
+          'LinkedIn-Version': '202406',
+        },
+      }),
+    ]);
+
+    // Log the campaigns response data
+console.log('Campaigns response data:', campaignsResponse.data.elements);
+    const campaigns = campaignsResponse.data.elements || [];
+    const campaignGroups = groupsResponse.data.elements.map(group => ({
+      ...group,
+      campaigns: campaigns.filter(campaign => {
+        // Extract the numeric ID from the URN string
+        const campaignGroupId = campaign.campaignGroup.split(':').pop();
+        return campaignGroupId === String(group.id); // Compare as strings
+      }),
+      visible: false,
+    }));
+
+    console.log('Mapped campaign groups:', campaignGroups);
+    res.json(campaignGroups);
+  } catch (error) {
+    console.error('Error fetching ad campaign groups or campaigns:', error);
+    res.status(500).send('Error fetching ad campaign groups or campaigns');
+  }
+});
 // Test route
 app.get('/api/protected', authenticateToken, (req, res) => {
   res.json({ message: 'You have access to protected route' });
