@@ -157,7 +157,6 @@ app.get('/auth/linkedin/callback',
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
       });
 
-      console.log('Access and Refresh Tokens Set');
 
       const frontendUrl = process.env.NODE_ENV === 'production'
         ? process.env.FRONTEND_URL_PROD
@@ -266,27 +265,22 @@ app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (r
   const { accountId } = req.query;
 
   if (!accountId) {
-    console.log('Account ID not provided');
     return res.status(400).json({ error: 'Account ID is required' });
   }
 
   try {
-    console.log('Fetching user from the database...');
     const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
 
     if (!user || !user.accessToken) {
-      console.log('User or access token not found');
       return res.status(404).json({ error: 'User or access token not found' });
     }
 
     const token = user.accessToken;
     const userAdAccountID = accountId.split(':').pop();
-    console.log('Access token and account ID:', token, userAdAccountID);
 
     const campaignGroupsUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaignGroups?q=search&sortOrder=DESCENDING`;
     const campaignsUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
 
-    console.log('Fetching campaign groups and campaigns from LinkedIn...');
     const [groupsResponse, campaignsResponse] = await Promise.all([
       axios.get(campaignGroupsUrl, {
         headers: {
@@ -305,7 +299,6 @@ app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (r
     ]);
 
     // Log the campaigns response data
-console.log('Campaigns response data:', campaignsResponse.data.elements);
     const campaigns = campaignsResponse.data.elements || [];
     const campaignGroups = groupsResponse.data.elements.map(group => ({
       ...group,
@@ -317,7 +310,6 @@ console.log('Campaigns response data:', campaignsResponse.data.elements);
       visible: false,
     }));
 
-    console.log('Mapped campaign groups:', campaignGroups);
     res.json(campaignGroups);
   } catch (error) {
     console.error('Error fetching ad campaign groups or campaigns:', error);
@@ -1480,24 +1472,3 @@ const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
-
-
-// https://api.linkedin.com/rest/adAnalytics?q=analytics&pivot=CREATIVE&timeGranularity=DAILY&dateRange=(start:(year:2024,month:6,day:1))&campaigns=List(urn%3Ali%3AsponsoredCampaign%3A314706446)
-
-// https://api.linkedin.com/rest/adAnalytics?q=statistics&pivots=CREATIVE&dateRange=(start:(year:2024,month:6,day:1))&timeGranularity=DAILY&campaigns=List(urn%3Ali%3AsponsoredCampaign%3A314706446)
-
-// https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:2023,month:6,day:1),end:(year:2024,month:9,day:30))&timeGranularity=MONTHLY&accounts=List(urn%3Ali%3AsponsoredAccount%3A512388408)&pivot=COMPANY&fields=externalWebsiteConversions,dateRange,impressions,landingPageClicks,likes,shares,costInLocalCurrency,approximateUniqueImpressions,pivotValues
-
-
-// https://api.linkedin.com/rest/adAccounts/512388408/adCampaigns?q=search&search=(type:(values:List(SPONSORED_UPDATES)),status:(values:List(ACTIVE)))&sortOrder=DESCENDING
-
-
-
-// List(urn%3Ali%3AsponsoredCampaign%3A314706446,urn%3Ali%3AsponsoredCampaign%3A320888526,urn%3Ali%3AsponsoredCampaign%3A320931536)
-
-// https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:2024,month:6,day:1),end:(year:2024,month:6,day:24))&timeGranularity=MONTHLY&accounts=List(urn%3Ali%3AsponsoredAccount%3A512388408)&campaigns=List(urn%3Ali%3AsponsoredCampaign%3A314706446,urn%3Ali%3AsponsoredCampaign%3A320888526,urn%3Ali%3AsponsoredCampaign%3A320931536)&pivot=CAMPAIGN&fields=externalWebsiteConversions,dateRange,impressions,landingPageClicks,likes,shares,costInLocalCurrency,approximateUniqueImpressions
-// Newest https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:2024,month:6,day:1),end:(year:2024,month:6,day:24))&timeGranularity=MONTHLY&accounts=List(urn%3Ali%3AsponsoredAccount%3A512388408)&campaigns=List(urn%3Ali%3AsponsoredCampaign%3A314706446,urn%3Ali%3AsponsoredCampaign%3A320888526,urn%3Ali%3AsponsoredCampaign%3A320931536)&pivot=CAMPAIGN&fields=externalWebsiteConversions,dateRange,impressions,landingPageClicks,likes,shares,costInLocalCurrency,approximateUniqueImpressions,pivotValues
-
-
-// Get user list
-// https://api.linkedin.com/rest/adAccountUsers?q=accounts&accounts=List(urn%3Ali%3AsponsoredAccount%3A512388408)
