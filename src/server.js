@@ -44,6 +44,11 @@ passport.deserializeUser((obj, done) => {
   done(null, obj);
 });
 
+const formatDate = (date) => {
+  const options = { year: 'numeric', month: '2-digit', day: '2-digit' };
+  return new Date(date).toLocaleDateString('en-US', options);
+};
+
 // MongoDB client setup
 const url = 'mongodb+srv://jjnothere:GREATpoop^6^@black-licorice-cluster.5hb9ank.mongodb.net/?retryWrites=true&w=majority&appName=black-licorice-cluster';
 const client = new MongoClient(url);
@@ -334,7 +339,7 @@ app.get('/api/protected', authenticateToken, (req, res) => {
 
 // Enable CORS for development
 // Schedule the checkForChanges function to run every day at 2:15 PM
-cron.schedule('30 23 * * *', async () => {
+cron.schedule('27 0 * * *', async () => {
   try {
     await checkForChangesForAllUsers();
   } catch (error) {
@@ -377,29 +382,37 @@ async function checkForChangesForAllUsers() {
 
 // Function to fetch and check differences for a specific user and ad account
 async function checkForChanges(userId, accountId, token, db) {
-  const currentCampaigns = await fetchCurrentCampaigns(db, userId, accountId); // Existing campaigns in the database
-  const linkedInCampaigns = await fetchLinkedInCampaigns(accountId, token); // Campaigns from LinkedIn API
+  const currentCampaigns = await fetchCurrentCampaigns(db, userId, accountId);
+  const linkedInCampaigns = await fetchLinkedInCampaigns(accountId, token);
 
-  // Find differences between current campaigns and LinkedIn campaigns
   const newDifferences = [];
 
-  linkedInCampaigns.forEach(campaign2 => {
-    const campaign1 = currentCampaigns.find(c => c.id === campaign2.id);
+  linkedInCampaigns.forEach((campaign2) => {
+    const campaign1 = currentCampaigns.find((c) => c.id === campaign2.id);
     if (campaign1) {
       const changes = findDifferences(campaign1, campaign2);
       if (Object.keys(changes).length > 0) {
         newDifferences.push({
           campaign: campaign2.name,
-          date: new Date().toLocaleDateString(),
+          date: formatDate(new Date()), // Format the date here
           changes: changes,
           notes: campaign2.notes || [],
-          _id: campaign1._id // Ensure correct MongoDB ID
+          _id: campaign1._id ? new ObjectId(campaign1._id) : new ObjectId(),
         });
       }
+    } else {
+      // Handle new campaigns if necessary
+      newDifferences.push({
+        campaign: campaign2.name,
+        date: formatDate(new Date()), // Format the date here
+        changes: { message: 'New campaign added' },
+        notes: [],
+        _id: new ObjectId(),
+      });
     }
   });
 
-  // Save new campaigns and differences in the database
+  // Save updated campaigns and new differences
   await saveCampaigns(db, linkedInCampaigns, userId, accountId);
   await saveChanges(db, newDifferences, userId, accountId);
 }
@@ -438,9 +451,7 @@ async function saveCampaigns(db, campaigns, userId) {
   }
 }
 
-const findDifferences = (obj1, obj2, prefix = '') => {
-
-
+const findDifferences = (obj1, obj2) => {
   const keyMapping = {
     account: 'Account',
     associatedEntity: 'Associated Entity',
@@ -467,64 +478,35 @@ const findDifferences = (obj1, obj2, prefix = '') => {
     type: 'Campaign Type',
     unitCost: 'Unit Cost',
     version: 'Version'
-  }
-
-
-    const diffs = {};
-    for (const key in obj1) {
-      if (key === 'changeAuditStamps') continue; // Exclude changeAuditStamps
-      if (JSON.stringify(obj1[key]) !== JSON.stringify(obj2[key])) {
-        diffs[key] = true; // Only keep the key
-      }
-    }
-    return Object.keys(diffs).map(key => keyMapping[key] || key);
   };
 
+  const diffs = {};
+  for (const key in obj1) {
+    if (key === 'changeAuditStamps'|| key === 'version') continue; // Exclude changeAuditStamps
+    if (JSON.stringify(obj1[key]) !== JSON.stringify(obj2[key])) {
+      const mappedKey = keyMapping[key] || key; // Use mapped key if available
+      diffs[mappedKey] = {
+        oldValue: obj1[key],
+        newValue: obj2[key],
+      };
+    }
+  }
+  return diffs;
+};
+
+
   async function saveChanges(db, changes, userId, adAccountId) {
-    const colorMapping = {
-      Account: '#FF5733', // Bright Red
-      'Associated Entity': '#33C3FF', // Light Blue
-      'Audience Expansion': '#28A745', // Green
-      'Campaign Group': '#AF7AC5', // Purple
-      'Cost Type': '#FFB533', // Orange
-      'Creative Selection': '#FF69B4', // Pink
-      'Daily Budget': '#17A2B8', // Cyan
-      Format: '#FFD700', // Gold/Yellow
-      ID: '#FF33C9', // Magenta
-      Locale: '#8B4513', // Saddle Brown
-      Name: '#32CD32', // Lime Green
-      'Objective Type': '#000080', // Navy Blue
-      'Offsite Delivery': '#808000', // Olive Green
-      'Offsite Preferences': '#20B2AA', // Light Sea Green
-      'Optimization Target Type': '#800000', // Maroon
-      'Pacing Strategy': '#FF4500', // Orange Red
-      'Run Schedule': '#4682B4', // Steel Blue
-      'Serving Statuses': '#1E90FF', // Dodger Blue
-      Status: '#228B22', // Forest Green
-      'Story Delivery': '#DC143C', // Crimson Red
-      'Targeting Criteria': '#FF8C00', // Dark Orange
-      Test: '#00CED1', // Dark Turquoise
-      Type: '#9932CC', // Dark Orchid
-      'Unit Cost': '#DAA520', // Goldenrod
-      Version: '#FF6347' // Tomato
-    };
-  
     if (!adAccountId) {
       console.error("Error: adAccountId is undefined.");
       return; // Exit if adAccountId is not provided
     }
   
     const collection = db.collection('changes');
-    
+  
     const changesWithIds = changes.map(change => ({
       ...change,
       _id: change._id ? new ObjectId(change._id) : new ObjectId(),
-      changes: Array.isArray(change.changes)
-        ? change.changes.map(changeType => {
-            const color = colorMapping[changeType] || 'black';
-            return `<span style="color:${color};">${changeType}</span>`;
-          }).join('<br>')
-        : change.changes // If `changes` is not an array, use it directly
+      // No need to process changes into HTML
     }));
   
     const existingUserChanges = await collection.findOne({ userId });
@@ -537,7 +519,7 @@ const findDifferences = (obj1, obj2, prefix = '') => {
           existingChange._id.equals(newChange._id) ||
           (existingChange.campaign === newChange.campaign &&
             existingChange.date === newChange.date &&
-            existingChange.changes === newChange.changes)
+            JSON.stringify(existingChange.changes) === JSON.stringify(newChange.changes))
         )
       );
   
@@ -554,6 +536,81 @@ const findDifferences = (obj1, obj2, prefix = '') => {
       });
     }
   }
+
+  // async function saveChanges(db, changes, userId, adAccountId) {
+  //   const colorMapping = {
+  //     Account: '#FF5733', // Bright Red
+  //     'Associated Entity': '#33C3FF', // Light Blue
+  //     'Audience Expansion': '#28A745', // Green
+  //     'Campaign Group': '#AF7AC5', // Purple
+  //     'Cost Type': '#FFB533', // Orange
+  //     'Creative Selection': '#FF69B4', // Pink
+  //     'Daily Budget': '#17A2B8', // Cyan
+  //     Format: '#FFD700', // Gold/Yellow
+  //     ID: '#FF33C9', // Magenta
+  //     Locale: '#8B4513', // Saddle Brown
+  //     Name: '#32CD32', // Lime Green
+  //     'Objective Type': '#000080', // Navy Blue
+  //     'Offsite Delivery': '#808000', // Olive Green
+  //     'Offsite Preferences': '#20B2AA', // Light Sea Green
+  //     'Optimization Target Type': '#800000', // Maroon
+  //     'Pacing Strategy': '#FF4500', // Orange Red
+  //     'Run Schedule': '#4682B4', // Steel Blue
+  //     'Serving Statuses': '#1E90FF', // Dodger Blue
+  //     Status: '#228B22', // Forest Green
+  //     'Story Delivery': '#DC143C', // Crimson Red
+  //     'Targeting Criteria': '#FF8C00', // Dark Orange
+  //     Test: '#00CED1', // Dark Turquoise
+  //     Type: '#9932CC', // Dark Orchid
+  //     'Unit Cost': '#DAA520', // Goldenrod
+  //     Version: '#FF6347' // Tomato
+  //   };
+  
+  //   if (!adAccountId) {
+  //     console.error("Error: adAccountId is undefined.");
+  //     return; // Exit if adAccountId is not provided
+  //   }
+  
+  //   const collection = db.collection('changes');
+    
+  //   const changesWithIds = changes.map(change => ({
+  //     ...change,
+  //     _id: change._id ? new ObjectId(change._id) : new ObjectId(),
+  //     changes: Array.isArray(change.changes)
+  //       ? change.changes.map(changeType => {
+  //           const color = colorMapping[changeType] || 'black';
+  //           return `<span style="color:${color};">${changeType}</span>`;
+  //         }).join('<br>')
+  //       : change.changes // If `changes` is not an array, use it directly
+  //   }));
+  
+  //   const existingUserChanges = await collection.findOne({ userId });
+  
+  //   if (existingUserChanges) {
+  //     const existingAdAccountChanges = existingUserChanges.changes[adAccountId] || [];
+  
+  //     const uniqueChanges = changesWithIds.filter(newChange =>
+  //       !existingAdAccountChanges.some(existingChange =>
+  //         existingChange._id.equals(newChange._id) ||
+  //         (existingChange.campaign === newChange.campaign &&
+  //           existingChange.date === newChange.date &&
+  //           existingChange.changes === newChange.changes)
+  //       )
+  //     );
+  
+  //     if (uniqueChanges.length > 0) {
+  //       await collection.updateOne(
+  //         { userId },
+  //         { $push: { [`changes.${adAccountId}`]: { $each: uniqueChanges } } }
+  //       );
+  //     }
+  //   } else {
+  //     await collection.insertOne({
+  //       userId,
+  //       changes: { [adAccountId]: changesWithIds }
+  //     });
+  //   }
+  // }
 
 // Route to get the user's ad accounts
 app.get('/api/get-user-ad-accounts', authenticateToken, async (req, res) => {
@@ -978,6 +1035,7 @@ app.get('/api/get-current-campaigns', authenticateToken, async (req, res) => {
 // });
 
 app.post('/api/save-changes', authenticateToken, async (req, res) => {
+  console.log('Received changes to save:', req.body.changes);
   const { changes, adAccountId } = req.body; 
   const userId = req.user.userId;
 
@@ -1028,7 +1086,6 @@ app.post('/api/add-note', authenticateToken, async (req, res) => {
   const userId = req.user.userId;
 
   try {
-    await client.connect();
     const db = client.db('black-licorice');
     const changesCollection = db.collection('changes');
 
@@ -1036,7 +1093,7 @@ app.post('/api/add-note', authenticateToken, async (req, res) => {
 
     // Add the new note to the specific campaign within the specified ad account
     const result = await changesCollection.updateOne(
-      { userId, [`changes.${accountId}._id`]: new ObjectId(campaignId) },
+      { userId },
       { $push: { [`changes.${accountId}.$[elem].notes`]: note } },
       { arrayFilters: [{ "elem._id": new ObjectId(campaignId) }] }
     );
@@ -1062,12 +1119,11 @@ app.post('/api/edit-note', authenticateToken, async (req, res) => {
   }
 
   try {
-    await client.connect();
     const db = client.db('black-licorice');
     const changesCollection = db.collection('changes');
 
     const result = await changesCollection.updateOne(
-      { userId, [`changes.${accountId}._id`]: new ObjectId(campaignId) },
+      { userId },
       {
         $set: {
           [`changes.${accountId}.$[campaignElem].notes.$[noteElem].note`]: updatedNote,
@@ -1103,12 +1159,11 @@ app.post('/api/delete-note', authenticateToken, async (req, res) => {
   }
 
   try {
-    await client.connect();
     const db = client.db('black-licorice');
     const changesCollection = db.collection('changes');
 
     const result = await changesCollection.updateOne(
-      { userId, [`changes.${accountId}._id`]: new ObjectId(campaignId) },
+      { userId },
       { $pull: { [`changes.${accountId}.$[campaignElem].notes`]: { _id: new ObjectId(noteId) } } },
       {
         arrayFilters: [
