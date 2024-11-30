@@ -1080,6 +1080,41 @@ app.post('/api/save-changes', authenticateToken, async (req, res) => {
   }
 });
 
+// New route to get geo information from LinkedIn API
+app.get('/api/linkedin/geo/:id', authenticateToken, async (req, res) => {
+  console.log("🐒 ~ aaaaaaaaaaaaareq:", req.body)
+  const geoId = req.params.id;
+
+  try {
+    // Fetch the user from the database using LinkedIn ID
+    const user = await client
+      .db('black-licorice')
+      .collection('users')
+      .findOne({ linkedinId: req.user.linkedinId });
+
+    if (!user || !user.accessToken) {
+      return res.status(404).json({ error: 'User or access token not found' });
+    }
+
+    const token = user.accessToken;
+
+    // LinkedIn API endpoint for geo information
+    const apiUrl = `https://api.linkedin.com/v2/geo/${geoId}`;
+
+    const response = await axios.get(apiUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'LinkedIn-Version': '202306', // Use the appropriate API version
+      },
+    });
+
+    res.json(response.data);
+  } catch (error) {
+    console.error('Error fetching geo information:', error.response?.data || error.message);
+    res.status(error.response?.status || 500).send('Error fetching geo information');
+  }
+});
+
 // Add Note Endpoint
 app.post('/api/add-note', authenticateToken, async (req, res) => {
   const { accountId, campaignId, newNote } = req.body;
