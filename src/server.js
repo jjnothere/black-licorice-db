@@ -339,13 +339,15 @@ app.get('/api/protected', authenticateToken, (req, res) => {
 
 // Enable CORS for development
 // Schedule the checkForChanges function to run every day at 2:15 PM
-cron.schedule('27 0 * * *', async () => {
-  try {
-    await checkForChangesForAllUsers();
-  } catch (error) {
-    console.error('Error running scheduled checkForChangesForAllUsers:', error);
-  }
-});
+
+
+// cron.schedule('27 0 * * *', async () => {
+//   try {
+//     await checkForChangesForAllUsers();
+//   } catch (error) {
+//     console.error('Error running scheduled checkForChangesForAllUsers:', error);
+//   }
+// });
 
 // Function to iterate through all users and check for campaign changes
 async function checkForChangesForAllUsers() {
