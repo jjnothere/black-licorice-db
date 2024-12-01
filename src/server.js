@@ -1035,7 +1035,6 @@ app.get('/api/get-current-campaigns', authenticateToken, async (req, res) => {
 // });
 
 app.post('/api/save-changes', authenticateToken, async (req, res) => {
-  console.log('Received changes to save:', req.body.changes);
   const { changes, adAccountId } = req.body; 
   const userId = req.user.userId;
 
@@ -1080,9 +1079,50 @@ app.post('/api/save-changes', authenticateToken, async (req, res) => {
   }
 });
 
+// Route to fetch targeting entities by skill and ID
+app.get('/api/linkedin/targeting-entities', authenticateToken, async (req, res) => {
+  let { urnType, urnId } = req.query;
+
+  urnType = urnType?.trim();
+  urnId = urnId?.trim();
+
+  if (!urnType || !urnId) {
+    return res.status(400).json({ error: 'urnType and urnId are required' });
+  }
+
+  try {
+    const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
+    if (!user || !user.accessToken) {
+      return res.status(404).json({ error: 'User or access token not found' });
+    }
+
+    const token = user.accessToken;
+    const apiUrl = `https://api.linkedin.com/v2/adTargetingEntities?q=urns&urns=${encodeURIComponent(`urn:li:${urnType}:${urnId}`)}`;
+
+
+    const response = await axios.get(apiUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'LinkedIn-Version': '202306',
+      },
+    });
+
+    const targetingData = response.data.elements?.[0];
+    if (targetingData) {
+      res.json({ name: targetingData.name });
+    } else {
+      res.status(404).json({ error: 'No data found for the given URN' });
+    }
+  } catch (error) {
+    console.error('Error fetching targeting entities:', error.response?.data || error.message);
+    res.status(error.response?.status || 500).send('Error fetching targeting entities');
+  }
+});
+
+
+
 // New route to get geo information from LinkedIn API
 app.get('/api/linkedin/geo/:id', authenticateToken, async (req, res) => {
-  console.log("🐒 ~ aaaaaaaaaaaaareq:", req.body)
   const geoId = req.params.id;
 
   try {
