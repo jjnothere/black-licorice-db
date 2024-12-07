@@ -1054,12 +1054,21 @@ app.post('/api/save-changes', authenticateToken, async (req, res) => {
     if (existingUserChanges) {
       const existingAdAccountChanges = existingUserChanges.changes[adAccountId] || [];
       const uniqueChanges = changesWithIds.filter(newChange =>
-        !existingAdAccountChanges.some(existingChange =>
-          existingChange._id.equals(newChange._id) ||
-          (existingChange.campaign === newChange.campaign &&
-           existingChange.date === newChange.date &&
-           existingChange.changes === newChange.changes)
-        )
+        !existingAdAccountChanges.some(existingChange => {
+          const existingChangeId = typeof existingChange._id === 'string'
+            ? new ObjectId(existingChange._id)
+            : existingChange._id;
+          const newChangeId = typeof newChange._id === 'string'
+            ? new ObjectId(newChange._id)
+            : newChange._id;
+      
+          return (
+            existingChangeId.equals(newChangeId) ||
+            (existingChange.campaign === newChange.campaign &&
+              existingChange.date === newChange.date &&
+              JSON.stringify(existingChange.changes) === JSON.stringify(newChange.changes))
+          );
+        })
       );
 
       if (uniqueChanges.length > 0) {
