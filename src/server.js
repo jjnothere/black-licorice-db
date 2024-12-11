@@ -20,7 +20,6 @@ const app = express();
 app.use(express.json());
 app.use(cookieParser());
 
-
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' ? process.env.FRONTEND_URL_PROD : process.env.FRONTEND_URL_DEV,
   credentials: true, // allows sending cookies and auth headers
@@ -151,15 +150,15 @@ app.get('/auth/linkedin/callback',
 
       // Set the tokens in cookies
       res.cookie('accessToken', jwtAccessToken, {
+        httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        maxAge: 2 * 60 * 60 * 1000, // 2 hours
+        maxAge: 2 * 60 * 60 * 1000
       });
-      
       res.cookie('refreshToken', refreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         path: '/',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        maxAge: 7 * 24 * 60 * 60 * 1000
       });
 
 
@@ -186,19 +185,21 @@ const authenticateToken = (req, res, next) => {
   const token = req.cookies.accessToken;
 
   if (!token) {
+    console.warn('No token found in cookies.');
     return res.status(401).json({ message: 'Access Denied' });
   }
 
   try {
-    // Verify the access token
     jwt.verify(token, process.env.LINKEDIN_CLIENT_SECRET, (err, user) => {
       if (err) {
-        return res.status(403).json({ message: 'Invalid or expired token' });
+        console.error('Token verification failed:', err.message);
+        return res.status(401).json({ message: 'Invalid or expired token' });
       }
       req.user = user;
       next();
     });
   } catch (error) {
+    console.error('Error verifying token:', error.message);
     return res.status(403).json({ message: 'Invalid Token' });
   }
 };
@@ -220,47 +221,43 @@ app.post('/api/logout', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/refresh-token', (req, res) => {
+app.post('/api/refresh-token', async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
+  console.log("🐒 ~ refreshToken:", refreshToken)
 
   if (!refreshToken) {
-    return res.status(403).json({ message: 'Refresh token required' });
+    console.error('No refresh token in request');
+    return res.status(403).json({ message: 'Refresh token is required' });
   }
 
   try {
-    // Verify the refresh token
     const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+    const userId = decoded.userId;
 
-    // Generate a new access token
+    await client.connect();
+    const db = client.db('black-licorice');
+    const user = await db.collection('users').findOne({ userId });
+
+    if (!user || user.refreshToken !== refreshToken) {
+      console.error('Invalid or mismatched refresh token');
+      return res.status(403).json({ message: 'Invalid refresh token' });
+    }
+
     const newAccessToken = jwt.sign(
-      { userId: decoded.userId, linkedinId: decoded.linkedinId },
+      { userId: user.userId, linkedinId: user.linkedinId },
       process.env.LINKEDIN_CLIENT_SECRET,
-      { expiresIn: '1h' }
+      { expiresIn: '2h' }
     );
 
-    // Optionally, issue a new refresh token if necessary
-    const newRefreshToken = jwt.sign(
-      { userId: decoded.userId, linkedinId: decoded.linkedinId },
-      process.env.REFRESH_TOKEN_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    // Update cookies with the new tokens
     res.cookie('accessToken', newAccessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      maxAge: 60 * 60 * 1000, // 1 hour
+      maxAge: 2 * 60 * 60 * 1000, // 1 hour
     });
 
-    res.cookie('refreshToken', newRefreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
-
-    res.json({ message: 'Access token refreshed' });
+    res.status(200).json({ accessToken: newAccessToken });
   } catch (error) {
-    console.error('Error refreshing token:', error);
+    console.error('Error refreshing token:', error.message);
     res.status(403).json({ message: 'Invalid refresh token' });
   }
 });
@@ -804,7 +801,7 @@ app.post('/api/signup', async (req, res) => {
         userId: newUser.userId 
       }, 
       process.env.LINKEDIN_CLIENT_SECRET,  // This should pull the key from your .env file
-      { expiresIn: '1h' }
+      { expiresIn: '2h' }
     );
     
     res.status(201).json({ token });
@@ -846,7 +843,7 @@ app.post('/api/login', async (req, res) => {
         userId: user.userId,  // Include userId in the token
       },
       process.env.LINKEDIN_CLIENT_SECRET,
-      { expiresIn: '1h' }
+      { expiresIn: '2h' }
     );
 
     // Send the token to the client
