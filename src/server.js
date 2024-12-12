@@ -246,8 +246,6 @@ app.post('/api/refresh-token', async (req, res) => {
     );
 
     res.cookie('accessToken', newAccessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
       maxAge: 60 * 1000, // 1 hour
     });
 
