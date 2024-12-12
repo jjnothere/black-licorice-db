@@ -150,7 +150,7 @@ app.get('/auth/linkedin/callback',
 
       // Set the tokens in cookies
       res.cookie('accessToken', jwtAccessToken, {
-        maxAge: 60 * 1000
+        maxAge: 2 * 60 * 60 * 1000, // 2 hour
       });
       res.cookie('refreshToken', refreshToken, {
         path: '/',
@@ -246,7 +246,7 @@ app.post('/api/refresh-token', async (req, res) => {
     );
 
     res.cookie('accessToken', newAccessToken, {
-      maxAge: 60 * 1000, // 1 hour
+      maxAge: 2 * 60 * 60 * 1000, // 2 hour
     });
 
     res.status(200).json({ accessToken: newAccessToken });
