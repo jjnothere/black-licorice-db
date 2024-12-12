@@ -150,13 +150,9 @@ app.get('/auth/linkedin/callback',
 
       // Set the tokens in cookies
       res.cookie('accessToken', jwtAccessToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        maxAge: 2 * 60 * 60 * 1000
+        maxAge: 60 * 1000
       });
       res.cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
         path: '/',
         maxAge: 7 * 24 * 60 * 60 * 1000
       });
@@ -252,7 +248,7 @@ app.post('/api/refresh-token', async (req, res) => {
     res.cookie('accessToken', newAccessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      maxAge: 2 * 60 * 60 * 1000, // 1 hour
+      maxAge: 60 * 1000, // 1 hour
     });
 
     res.status(200).json({ accessToken: newAccessToken });
