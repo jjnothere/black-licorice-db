@@ -1081,6 +1081,38 @@ app.post('/api/save-changes', authenticateToken, async (req, res) => {
   }
 });
 
+app.get('/api/linkedin/adSegments/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+
+  const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
+  if (!user || !user.accessToken) {
+    return res.status(404).json({ error: 'User or access token not found' });
+  }
+
+  const token = user.accessToken;
+  const apiUrl = `https://api.linkedin.com/rest/adSegments/${id}`;
+
+  try {
+    const response = await axios.get(apiUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'X-RestLi-Protocol-Version': '2.0.0',
+        'LinkedIn-Version': '202406',
+      },
+    });
+
+    const data = response.data;
+    if (data && data.name) {
+      res.json({ name: data.name });
+    } else {
+      res.status(404).json({ error: 'No data found for the given adSegment ID' });
+    }
+  } catch (error) {
+    console.error(`Error fetching adSegment ${id}:`, error.response?.data || error.message);
+    res.status(error.response?.status || 500).send(`Error fetching adSegment ${id}`);
+  }
+});
+
 // Route to fetch targeting entities by skill and ID
 app.get('/api/linkedin/targeting-entities', authenticateToken, async (req, res) => {
   let { urnType, urnId } = req.query;
