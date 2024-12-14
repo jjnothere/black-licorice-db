@@ -1131,13 +1131,13 @@ app.get('/api/linkedin/targeting-entities', authenticateToken, async (req, res) 
     }
 
     const token = user.accessToken;
-    const apiUrl = `https://api.linkedin.com/v2/adTargetingEntities?q=urns&urns=${encodeURIComponent(`urn:li:${urnType}:${urnId}`)}`;
+    const apiUrl = `https://api.linkedin.com/rest/adTargetingEntities?q=urns&urns=${encodeURIComponent(`urn:li:${urnType}:${urnId}`)}`;
 
 
     const response = await axios.get(apiUrl, {
       headers: {
         Authorization: `Bearer ${token}`,
-        'LinkedIn-Version': '202306',
+        'LinkedIn-Version': '202406',
       },
     });
 
@@ -1156,38 +1156,38 @@ app.get('/api/linkedin/targeting-entities', authenticateToken, async (req, res) 
 
 
 // New route to get geo information from LinkedIn API
-app.get('/api/linkedin/geo/:id', authenticateToken, async (req, res) => {
-  const geoId = req.params.id;
+// app.get('/api/linkedin/geo/:id', authenticateToken, async (req, res) => {
+//   const geoId = req.params.id;
 
-  try {
-    // Fetch the user from the database using LinkedIn ID
-    const user = await client
-      .db('black-licorice')
-      .collection('users')
-      .findOne({ linkedinId: req.user.linkedinId });
+//   try {
+//     // Fetch the user from the database using LinkedIn ID
+//     const user = await client
+//       .db('black-licorice')
+//       .collection('users')
+//       .findOne({ linkedinId: req.user.linkedinId });
 
-    if (!user || !user.accessToken) {
-      return res.status(404).json({ error: 'User or access token not found' });
-    }
+//     if (!user || !user.accessToken) {
+//       return res.status(404).json({ error: 'User or access token not found' });
+//     }
 
-    const token = user.accessToken;
+//     const token = user.accessToken;
 
-    // LinkedIn API endpoint for geo information
-    const apiUrl = `https://api.linkedin.com/v2/geo/${geoId}`;
+//     // LinkedIn API endpoint for geo information
+//     const apiUrl = `https://api.linkedin.com/v2/geo/${geoId}`;
 
-    const response = await axios.get(apiUrl, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'LinkedIn-Version': '202306', // Use the appropriate API version
-      },
-    });
+//     const response = await axios.get(apiUrl, {
+//       headers: {
+//         Authorization: `Bearer ${token}`,
+//         'LinkedIn-Version': '202306', // Use the appropriate API version
+//       },
+//     });
 
-    res.json(response.data);
-  } catch (error) {
-    console.error('Error fetching geo information:', error.response?.data || error.message);
-    res.status(error.response?.status || 500).send('Error fetching geo information');
-  }
-});
+//     res.json(response.data);
+//   } catch (error) {
+//     console.error('Error fetching geo information:', error.response?.data || error.message);
+//     res.status(error.response?.status || 500).send('Error fetching geo information');
+//   }
+// });
 
 // Add Note Endpoint
 app.post('/api/add-note', authenticateToken, async (req, res) => {
@@ -1289,6 +1289,44 @@ app.post('/api/delete-note', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error deleting note:', error);
     res.status(500).send('Internal Server Error');
+  }
+});
+
+// Backend route to fetch campaign group name
+app.get('/api/linkedin/ad-campaign-group-name', authenticateToken, async (req, res) => {
+  const { accountId, groupId } = req.query;
+
+  if (!accountId || !groupId) {
+    return res.status(400).json({ error: 'Account ID and Group ID are required' });
+  }
+
+  try {
+    // Fetch the user and access token
+    const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
+    if (!user || !user.accessToken) {
+      return res.status(404).json({ error: 'User or access token not found' });
+    }
+
+    const token = user.accessToken;
+    const userAdAccountID = accountId.split(':').pop();
+
+    // LinkedIn API endpoint
+    const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaignGroups/${groupId}`;
+
+    const response = await axios.get(apiUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'X-RestLi-Protocol-Version': '2.0.0',
+        'LinkedIn-Version': '202406',
+      },
+    });
+
+    // Return the name of the campaign group
+    const name = response.data?.name || 'Unknown';
+    res.json({ name });
+  } catch (error) {
+    console.error('Error fetching campaign group name:', error.response?.data || error.message);
+    res.status(error.response?.status || 500).send('Error fetching campaign group name');
   }
 });
 
