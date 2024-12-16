@@ -219,7 +219,6 @@ app.post('/api/logout', authenticateToken, async (req, res) => {
 
 app.post('/api/refresh-token', async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
-  console.log("🐒 ~ refreshToken:", refreshToken)
 
   if (!refreshToken) {
     console.error('No refresh token in request');
@@ -1510,10 +1509,11 @@ app.get('/api/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
       const userAdAccountID = accountId.split(':').pop();
       const token = user.accessToken;
 
-      const apiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
+      const campaignsApiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
 
       try {
-        const response = await axios.get(apiUrl, {
+        // Fetch ad campaigns for the current account
+        const response = await axios.get(campaignsApiUrl, {
           headers: {
             Authorization: `Bearer ${token}`,
             'X-RestLi-Protocol-Version': '2.0.0',
@@ -1521,35 +1521,89 @@ app.get('/api/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
           },
         });
 
+        // Map over each campaign and fetch creatives tied to it
+        const campaignsWithCreatives = await Promise.all(
+          response.data.elements.map(async (campaign) => {
+            try {
+              const campaignId = 'urn:li:sponsoredCampaign:' + campaign.id; // Extract campaign ID
+              const creativesApiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/creatives?q=criteria&campaigns=List(${encodeURIComponent(campaignId)})&fields=id,isServing,content`;
+
+              const creativesResponse = await axios.get(creativesApiUrl, {
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'X-RestLi-Protocol-Version': '2.0.0',
+                  'LinkedIn-Version': '202406',
+                },
+              });
+
+              // Process each creative and set its name
+              campaign.creatives = await Promise.all(
+                creativesResponse.data.elements.map(async (creative) => {
+                  if (creative.content?.textAd?.headline) {
+                    // Use the headline as the name
+                    creative.name = creative.content.textAd.headline;
+                  } else if (creative.content?.reference) {
+                    // Fetch additional data to get the dscName
+                    const referenceId = creative.content.reference;
+                    try {
+                      const referenceApiUrl = `https://api.linkedin.com/rest/posts/${encodeURIComponent(referenceId)}`;
+                      const referenceResponse = await axios.get(referenceApiUrl, {
+                        headers: {
+                          Authorization: `Bearer ${token}`,
+                          'X-RestLi-Protocol-Version': '2.0.0',
+                          'LinkedIn-Version': '202307',
+                        },
+                      });
+                      creative.name = referenceResponse.data.adContext?.dscName || 'Unnamed Creative';
+                    } catch (error) {
+                      console.error(`Error fetching reference details for creative ${creative.id}:`, error);
+                      creative.name = 'Unnamed Creative'; // Fallback if fetching reference fails
+                    }
+                  } else {
+                    creative.name = 'Unnamed Creative'; // Default if neither headline nor reference is available
+                  }
+
+                  return creative;
+                })
+              );
+
+              return campaign;
+            } catch (error) {
+              console.error(`Error fetching creatives for campaign ${campaign.id}:`, error);
+              campaign.creatives = []; // Fallback to an empty array
+              return campaign;
+            }
+          })
+        );
+
         // Get existing data for the current ad account if it exists
-        const existingCampaigns = existingAdCampaignsDoc?.adCampaigns?.[accountId]?.campaigns || [];
         const existingCampaignGroups = existingAdCampaignsDoc?.adCampaigns?.[accountId]?.campaignGroups || [];
         const existingBudget = existingAdCampaignsDoc?.adCampaigns?.[accountId]?.budget || null;
 
-        // Store the campaigns under the ad account ID key, preserving existing budget
+        // Store the campaigns under the ad account ID key, preserving existing budget and groups
         adCampaigns[accountId] = {
-          campaigns: response.data.elements || [],
-          campaignGroups: existingCampaignGroups, // Preserve the existing campaign groups
-          budget: existingBudget // Preserve the existing budget
+          campaigns: campaignsWithCreatives,
+          campaignGroups: existingCampaignGroups,
+          budget: existingBudget,
         };
       } catch (error) {
         console.error(`Error fetching ad campaigns for accountId ${accountId}:`, error);
         adCampaigns[accountId] = {
           campaigns: existingAdCampaignsDoc?.adCampaigns?.[accountId]?.campaigns || [],
           campaignGroups: existingCampaignGroups, // Preserve existing data in case of error
-          budget: existingBudget // Preserve the existing budget
+          budget: existingBudget, // Preserve the existing budget
         };
       }
     }
 
     // Add empty arrays for any ad accounts that weren't processed
-    user.adAccounts.forEach(account => {
+    user.adAccounts.forEach((account) => {
       const id = account.accountId;
       if (!adCampaigns.hasOwnProperty(id)) {
         adCampaigns[id] = {
           campaigns: existingAdCampaignsDoc?.adCampaigns?.[id]?.campaigns || [],
           campaignGroups: existingAdCampaignsDoc?.adCampaigns?.[id]?.campaignGroups || [],
-          budget: existingAdCampaignsDoc?.adCampaigns?.[id]?.budget || null
+          budget: existingAdCampaignsDoc?.adCampaigns?.[id]?.budget || null,
         };
       }
     });
