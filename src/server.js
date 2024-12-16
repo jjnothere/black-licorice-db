@@ -1554,6 +1554,7 @@ app.get('/api/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
                           'LinkedIn-Version': '202307',
                         },
                       });
+                      console.log("🐒 ~ referenceResponse:", referenceResponse.data.adContext?.dscName)
                       creative.name = referenceResponse.data.adContext?.dscName || 'Unnamed Creative';
                     } catch (error) {
                       console.error(`Error fetching reference details for creative ${creative.id}:`, error);
