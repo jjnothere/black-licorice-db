@@ -61,7 +61,7 @@ passport.use(new LinkedInStrategy({
   clientID: process.env.LINKEDIN_CLIENT_ID,
   clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
   callbackURL: callbackURL,
-  scope: ['r_ads_reporting', 'r_ads', 'rw_ads', 'r_basicprofile'],
+  scope: ['r_ads_reporting', 'r_ads', 'r_basicprofile', 'r_organization_social'],
 }, (accessToken, refreshToken, profile, done) => {
   return done(null, { profile, accessToken, refreshToken });
 }));
