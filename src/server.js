@@ -1554,7 +1554,6 @@ app.get('/api/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
                           'LinkedIn-Version': '202307',
                         },
                       });
-                      console.log("🐒 ~ referenceResponse:", referenceResponse.data.adContext?.dscName)
                       creative.name = referenceResponse.data.adContext?.dscName || 'Unnamed Creative';
                     } catch (error) {
                       console.error(`Error fetching reference details for creative ${creative.id}:`, error);
@@ -1831,6 +1830,21 @@ async function fetchAdCampaigns(userId, accessToken, accountIds) {
         })
       );
     } catch (error) {
+      // Check if it's a 401/403 due to invalid token
+      if (error.response && (error.response.status === 401 || error.response.status === 403)) {
+        const newAccessToken = await refreshUserAccessToken(user.refreshToken);
+        if (newAccessToken) {
+          // Update the user's accessToken in DB if not already done in refreshUserAccessToken
+          await db.collection('users').updateOne({ userId: user.userId }, { $set: { accessToken: newAccessToken } });
+          // Retry your request with the newAccessToken
+        } else {
+          console.error(`Failed to refresh token for user ${user.userId}`);
+          // Skip this user or handle accordingly
+        }
+      } else {
+        // Some other error
+        console.error('Some other error occurred:', error.message);
+      }
       console.error(`Error fetching ad campaigns for accountId ${accountId}:`, error);
       // If error, fallback to existing data
       campaignsWithCreatives = existingAdCampaignsDoc?.adCampaigns?.[accountId]?.campaigns || [];
@@ -2009,6 +2023,49 @@ async function fetchCampaignGroupNameBackend(token, accountId, groupId) {
   }
 }
 
+// A helper function to verify token validity and refresh if needed
+async function verifyAndRefreshTokenIfNeeded(user) {
+  if (!user.accessToken) {
+    console.warn(`Access token missing for user ${user.userId}`);
+    return null;
+  }
+
+  // Attempt a simple LinkedIn API call to verify token validity. 
+  // For example, calling the "me" endpoint if available, or any cheap endpoint.
+  const testUrl = 'https://api.linkedin.com/v2/me'; // This endpoint returns user details and requires a valid token
+
+  try {
+    const test = await axios.get(testUrl, {
+      headers: {
+        Authorization: `Bearer ${user.accessToken}`,
+        'X-RestLi-Protocol-Version': '2.0.0',
+        'LinkedIn-Version': '202306', // or appropriate version
+      },
+      timeout: 5000 // just a small timeout
+    });
+    // If we get here, the token is valid
+    return user.accessToken;
+  } catch (error) {
+    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
+      // Token is invalid, attempt a refresh
+      const newAccessToken = await refreshUserAccessToken(user.refreshToken);
+      if (newAccessToken) {
+        // Update DB with newAccessToken
+        const db = client.db('black-licorice');
+        await db.collection('users').updateOne({ userId: user.userId }, { $set: { accessToken: newAccessToken } });
+        return newAccessToken;
+      } else {
+        console.error(`Failed to refresh token for user ${user.userId}`);
+        return null;
+      }
+    } else {
+      // Some other error occurred
+      console.error('Error verifying token:', error.message);
+      return null;
+    }
+  }
+}
+
 // The main function that runs in the cron job
 async function checkForChangesForAllUsers() {
   try {
@@ -2019,14 +2076,17 @@ async function checkForChangesForAllUsers() {
     const users = await usersCollection.find({}).toArray();
 
     for (const user of users) {
-      const { userId, accessToken, adAccounts } = user;
+      const { userId, adAccounts } = user;
+
+      // Verify and refresh token if needed
+      const accessToken = await verifyAndRefreshTokenIfNeeded(user);
       if (!accessToken) {
-        console.warn(`Access token missing for user ${userId}`);
+        console.warn(`User ${userId} does not have a valid token, skipping...`);
         continue;
       }
 
       // Extract all the accountIds for this user
-      const accountIds = adAccounts.map(a => a.accountId);
+      const accountIds = adAccounts.map((a) => a.accountId);
 
       // 1. Fetch updated ad campaigns & creatives
       const adCampaigns = await fetchAdCampaigns(userId, accessToken, accountIds);
@@ -2039,7 +2099,7 @@ async function checkForChangesForAllUsers() {
           const currentCampaigns = await fetchCurrentCampaignsFromDB(userId, accountId);
 
           // Get LinkedIn campaigns from adCampaigns object
-          const linkedInCampaigns = adCampaigns[accountId].campaigns;
+          const linkedInCampaigns = adCampaigns[accountId]?.campaigns || [];
 
           const newDifferences = [];
           const urns = []; // Collect URNs here
@@ -2080,7 +2140,7 @@ async function checkForChangesForAllUsers() {
           // Fetch URN info if needed
           const uniqueUrns = Array.from(new Set(urns.map(JSON.stringify))).map(JSON.parse);
           const urnInfoMap = await fetchUrnInformation(uniqueUrns, accessToken);
-          newDifferences.forEach(d => d.urnInfoMap = urnInfoMap);
+          newDifferences.forEach((d) => (d.urnInfoMap = urnInfoMap));
 
           // Save the new differences
           await saveChangesToDB(userId, accountId, newDifferences);
@@ -2108,7 +2168,7 @@ async function saveAdCampaignsToDB(userId, adCampaigns) {
 }
 
 // Now, in your cron setup:
-cron.schedule('20 23 * * *', async () => { // runs every day at 2am for example
+cron.schedule('0 23 * * *', async () => { // runs every day at 2am for example
   console.log('Checking for changes for all users...');
   await checkForChangesForAllUsers();
   console.log('Done checking for changes for all users');
@@ -2127,8 +2187,40 @@ cron.schedule('20 23 * * *', async () => { // runs every day at 2am for example
 
 
 
+async function refreshUserAccessToken(refreshToken) {
+  if (!refreshToken) {
+    console.error('No refresh token provided');
+    return null;
+  }
 
+  try {
+    const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+    const userId = decoded.userId;
 
+    await client.connect();
+    const db = client.db('black-licorice');
+    const user = await db.collection('users').findOne({ userId });
+
+    if (!user || user.refreshToken !== refreshToken) {
+      console.error('Invalid or mismatched refresh token');
+      return null;
+    }
+
+    const newAccessToken = jwt.sign(
+      { userId: user.userId, linkedinId: user.linkedinId },
+      process.env.LINKEDIN_CLIENT_SECRET,
+      { expiresIn: '2h' }
+    );
+
+    // Optionally, you can also update the user's record in the database if needed
+    // await db.collection('users').updateOne({ userId }, { $set: { accessToken: newAccessToken } });
+
+    return newAccessToken;
+  } catch (error) {
+    console.error('Error refreshing token:', error.message);
+    return null;
+  }
+}
 
 
 
