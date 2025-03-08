@@ -1499,7 +1499,7 @@ app.get('/api/linkedin/ad-campaigns', authenticateToken, async (req, res) => {
 
     const userId = user.userId; // Get the user's ID from the database
     const adCampaigns = {};
-
+    // Fetch the existing adCampaigns document for the user
     // Fetch the existing adCampaigns document for the user
     const db = client.db('black-licorice');
     const existingAdCampaignsDoc = await db.collection('adCampaigns').findOne({ userId });
